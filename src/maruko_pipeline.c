@@ -1500,7 +1500,9 @@ static IntraRefreshMode maruko_intra_refresh_derive(
 	memset(out_ir, 0, sizeof(*out_ir));
 	if (cfg) {
 		mode = intra_refresh_parse_mode(cfg->intra_refresh_mode);
-		(void)codec; /* H.265 only */
+		/* Intra-refresh is codec-agnostic (SetIntraRefresh has no codec
+		 * field); the GDR derivation does not depend on codec. */
+		(void)codec;
 		intra_refresh_compute(mode, height, fps,
 			cfg->intra_refresh_lines, cfg->intra_refresh_qp,
 			cfg->gop_size_sec, out_ir);
@@ -3294,6 +3296,11 @@ static void maruko_pipeline_log_verbose_frame(MarukoBackendContext *ctx,
 #define HEVC_NAL_TRAIL_N 0
 #define HEVC_NAL_TRAIL_R 1
 #define MARUKO_REFTYPE_ENHANCE_P_NOTFORREF 4
+/* H.264 1-byte NAL header: forbidden(1)|nal_ref_idc(2)|type(5).  Non-reference
+ * = nal_ref_idc 0; the H.264 analogue of the HEVC TRAIL_R->TRAIL_N rewrite. */
+#define MARUKO_H264_NAL_REF_IDC_MASK 0x60
+#define MARUKO_H264_NAL_TYPE_MASK    0x1F
+#define MARUKO_H264_NAL_SLICE_NONIDR 1
 
 static size_t maruko_nal_header_idx(const uint8_t *buf, size_t len)
 {
@@ -3303,7 +3310,20 @@ static size_t maruko_nal_header_idx(const uint8_t *buf, size_t len)
 	return i < len ? i : len;
 }
 
-static void maruko_patch_pack_to_trail_n(i6c_venc_pack *pack)
+/* HEVC TRAIL_R(0x02)->TRAIL_N(0x00); H.264 non-IDR slice -> clear nal_ref_idc. */
+static void maruko_rewrite_nonref(PAYLOAD_TYPE_E codec, uint8_t *hdr_byte)
+{
+	if (codec == PT_H264) {
+		if ((*hdr_byte & MARUKO_H264_NAL_TYPE_MASK) == MARUKO_H264_NAL_SLICE_NONIDR &&
+		    (*hdr_byte & MARUKO_H264_NAL_REF_IDC_MASK) != 0)
+			*hdr_byte &= (uint8_t)~MARUKO_H264_NAL_REF_IDC_MASK;
+	} else {
+		if (*hdr_byte == 0x02)
+			*hdr_byte = 0x00;
+	}
+}
+
+static void maruko_patch_pack_to_trail_n(PAYLOAD_TYPE_E codec, i6c_venc_pack *pack)
 {
 	if (!pack || !pack->data || pack->length == 0)
 		return;
@@ -3320,9 +3340,7 @@ static void maruko_patch_pack_to_trail_n(i6c_venc_pack *pack)
 				continue;
 			size_t hdr = maruko_nal_header_idx(pack->data + off, nlen);
 			if (hdr >= nlen) continue;
-			if (pack->data[off + hdr] == 0x02) {
-				pack->data[off + hdr] = 0x00;
-			}
+			maruko_rewrite_nonref(codec, &pack->data[off + hdr]);
 		}
 		return;
 	}
@@ -3333,18 +3351,16 @@ static void maruko_patch_pack_to_trail_n(i6c_venc_pack *pack)
 		unsigned int nlen = pack->length - off;
 		size_t hdr = maruko_nal_header_idx(pack->data + off, nlen);
 		if (hdr >= nlen) return;
-		if (pack->data[off + hdr] == 0x02) {
-			pack->data[off + hdr] = 0x00;
-		}
+		maruko_rewrite_nonref(codec, &pack->data[off + hdr]);
 	}
 }
 
-static void maruko_patch_stream_to_trail_n(i6c_venc_strm *s)
+static void maruko_patch_stream_to_trail_n(PAYLOAD_TYPE_E codec, i6c_venc_strm *s)
 {
 	unsigned int i;
 	if (!s || !s->packet) return;
 	for (i = 0; i < s->count; i++)
-		maruko_patch_pack_to_trail_n(&s->packet[i]);
+		maruko_patch_pack_to_trail_n(codec, &s->packet[i]);
 }
 
 static int maruko_pipeline_process_stream(MarukoBackendContext *ctx,
@@ -3385,15 +3401,17 @@ static int maruko_pipeline_process_stream(MarukoBackendContext *ctx,
 		return -1;
 	}
 
-	/* refPred error-resilience marking — rewrite TRAIL_R → TRAIL_N for
-	 * frames the SDK marked as ENHANCE_P_NOTFORREF.  i6c shares this
-	 * encoder-firmware gap with i6e (Star6E): the pyramid logic is
-	 * correct internally but every NAL is emitted as TRAIL_R, leaving
-	 * generic decoders unable to identify non-reference frames.  See
-	 * star6e_runtime.c for the matching helper. */
-	if (ctx->cfg.ref_base > 0 &&
-	    stream.h265Info.refType == MARUKO_REFTYPE_ENHANCE_P_NOTFORREF) {
-		maruko_patch_stream_to_trail_n(&stream);
+	/* refPred error-resilience marking — mark ENHANCE_P_NOTFORREF frames as
+	 * non-reference in the bitstream (HEVC TRAIL_R→TRAIL_N, H.264
+	 * nal_ref_idc→0).  i6c shares this encoder-firmware gap with i6e
+	 * (Star6E): the SVC-T pyramid is correct internally but slice NALs are
+	 * emitted as reference, so generic decoders can't drop them under loss.
+	 * Works on both codecs; see star6e_runtime.c for the matching helper. */
+	if (ctx->cfg.ref_base > 0) {
+		unsigned int ref_type = (ctx->cfg.rc_codec == PT_H264)
+			? stream.h264Info.refType : stream.h265Info.refType;
+		if (ref_type == MARUKO_REFTYPE_ENHANCE_P_NOTFORREF)
+			maruko_patch_stream_to_trail_n(ctx->cfg.rc_codec, &stream);
 	}
 
 	++rt->frame_counter;

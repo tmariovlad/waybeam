@@ -86,6 +86,15 @@ static uint32_t star6e_scene_frame_size(const MI_VENC_Stream_t *s)
 #define HEVC_NAL_TRAIL_R 1
 #define SS_REFTYPE_ENHANCE_P_NOTFORREF 4
 
+/* H.264 NAL header (1 byte): forbidden_zero(1) | nal_ref_idc(2) | type(5).
+ * A non-reference picture is signalled by nal_ref_idc == 0.  The enhance-P
+ * "drop cleanly under loss" marking, on H.264, = clearing nal_ref_idc on the
+ * coded-slice NAL (type 1, non-IDR P/B slice) — the direct analogue of the
+ * HEVC TRAIL_R -> TRAIL_N rewrite. */
+#define H264_NAL_REF_IDC_MASK 0x60
+#define H264_NAL_TYPE_MASK    0x1F
+#define H264_NAL_SLICE_NONIDR 1
+
 /* Locate the NAL header byte 0 inside a payload buffer that may or may not
  * begin with a start-code prefix (00 00 01 / 00 00 00 01).  Returns the
  * index of NAL byte 0, or len on failure. */
@@ -97,18 +106,29 @@ static size_t star6e_nal_header_idx(const uint8_t *buf, size_t len)
 	return i < len ? i : len;
 }
 
-/* If a NAL is TRAIL_R (type 1) and the SDK marked this frame as
- * ENHANCE_P_NOTFORREF, rewrite the NAL header to TRAIL_N (type 0).
- *
- * Byte 0 bit layout: forbidden_zero(1) | nal_unit_type(6) | layer_id_msb(1)
- *   TRAIL_R = 0x02   (type=1, layer_msb=0)
- *   TRAIL_N = 0x00   (type=0, layer_msb=0)
- *
- * No-op if NAL layer_id_msb != 0 (we only touch single-layer streams), if
- * the NAL is anything other than TRAIL_R, or if no slice NALs are present
- * in the pack (we never touch VPS/SPS/PPS — those are nal_type >= 32 and
- * fail the TRAIL_R check). */
-static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
+/* Rewrite one NAL header byte to mark the frame non-reference ("drop cleanly
+ * under loss").  Per codec:
+ *   HEVC: TRAIL_R (byte 0x02, type=1) -> TRAIL_N (0x00, type=0).
+ *   H.264: coded non-IDR slice (type==1) -> clear nal_ref_idc bits (& ~0x60),
+ *          i.e. nal_ref_idc 0 = non-reference picture.
+ * Only single-layer slice NALs are touched; VPS/SPS/PPS and IDR are left alone. */
+static void star6e_rewrite_nonref(PAYLOAD_TYPE_E codec, uint8_t *hdr_byte)
+{
+	if (codec == PT_H264) {
+		if ((*hdr_byte & H264_NAL_TYPE_MASK) == H264_NAL_SLICE_NONIDR &&
+		    (*hdr_byte & H264_NAL_REF_IDC_MASK) != 0)
+			*hdr_byte &= (uint8_t)~H264_NAL_REF_IDC_MASK;
+	} else {
+		if (*hdr_byte == 0x02)  /* HEVC TRAIL_R -> TRAIL_N */
+			*hdr_byte = 0x00;
+	}
+}
+
+/* If the SDK marked this frame as ENHANCE_P_NOTFORREF, rewrite each coded
+ * slice NAL header so a generic decoder can identify the non-reference frame
+ * and drop it cleanly under loss.  Codec-specific (see star6e_rewrite_nonref).
+ * We never touch parameter-set / IDR NALs (they fail the per-codec checks). */
+static void star6e_patch_pack_to_trail_n(PAYLOAD_TYPE_E codec, MI_VENC_Pack_t *pack)
 {
 	if (!pack || !pack->data || pack->length == 0)
 		return;
@@ -125,9 +145,7 @@ static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 				continue;
 			size_t hdr = star6e_nal_header_idx(pack->data + off, nlen);
 			if (hdr >= nlen) continue;
-			if (pack->data[off + hdr] == 0x02) {
-				pack->data[off + hdr] = 0x00;
-			}
+			star6e_rewrite_nonref(codec, &pack->data[off + hdr]);
 		}
 		return;
 	}
@@ -139,18 +157,16 @@ static void star6e_patch_pack_to_trail_n(MI_VENC_Pack_t *pack)
 		MI_U32 nlen = pack->length - off;
 		size_t hdr = star6e_nal_header_idx(pack->data + off, nlen);
 		if (hdr >= nlen) return;
-		if (pack->data[off + hdr] == 0x02) {
-			pack->data[off + hdr] = 0x00;
-		}
+		star6e_rewrite_nonref(codec, &pack->data[off + hdr]);
 	}
 }
 
-static void star6e_patch_stream_to_trail_n(MI_VENC_Stream_t *s)
+static void star6e_patch_stream_to_trail_n(PAYLOAD_TYPE_E codec, MI_VENC_Stream_t *s)
 {
 	unsigned int i;
 	if (!s || !s->packet) return;
 	for (i = 0; i < s->count; i++)
-		star6e_patch_pack_to_trail_n(&s->packet[i]);
+		star6e_patch_pack_to_trail_n(codec, &s->packet[i]);
 }
 
 /* IDR NAL type per codec: HEVC IDR_W_RADL = 19, H.264 IDR slice = 5.
@@ -864,21 +880,22 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 		return ret;
 	}
 
-	/* refPred error-resilience marking — rewrite TRAIL_R → TRAIL_N for
-	 * frames the SDK marked as ENHANCE_P_NOTFORREF.  The encoder's own
-	 * SVC-T pyramid logic determines which frames are non-reference; we
-	 * just propagate that designation into the bitstream so generic
-	 * receivers can safely drop those NALs without cascade.
+	/* refPred error-resilience marking — mark frames the SDK flagged as
+	 * ENHANCE_P_NOTFORREF as non-reference in the bitstream so generic
+	 * receivers can safely drop those NALs without cascade.  The encoder's
+	 * own SVC-T pyramid (MI_VENC_SetRefParam, codec-agnostic) decides which
+	 * frames are non-reference; we just propagate it: HEVC TRAIL_R→TRAIL_N,
+	 * H.264 nal_ref_idc→0 (see star6e_rewrite_nonref).  Works on both codecs.
 	 *
 	 * Only active when refPred is enabled (ref_base > 0) — otherwise the
-	 * encoder produces a flat single-ref stream and every frame matters. */
-	/* SVC-T trail_n patch reads stream.h265Info — HEVC-only semantics.
-	 * ref_base is set exclusively by HEVC resilience presets, so this is
-	 * already inert for H.264; gate on codec as well to make that explicit
-	 * and avoid reading the h265Info union member under H.264. */
-	if (ps->video.codec != PT_H264 && vcfg->video0.ref_base > 0 &&
-	    stream.h265Info.refType == SS_REFTYPE_ENHANCE_P_NOTFORREF) {
-		star6e_patch_stream_to_trail_n(&stream);
+	 * encoder produces a flat single-ref stream and every frame matters.
+	 * The strminfo union is read with the codec-matching member; both
+	 * h264Info and h265Info expose refType at the same field. */
+	if (vcfg->video0.ref_base > 0) {
+		unsigned int ref_type = (ps->video.codec == PT_H264)
+			? stream.h264Info.refType : stream.h265Info.refType;
+		if (ref_type == SS_REFTYPE_ENHANCE_P_NOTFORREF)
+			star6e_patch_stream_to_trail_n(ps->video.codec, &stream);
 	}
 
 	{

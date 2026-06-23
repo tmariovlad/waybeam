@@ -1407,7 +1407,11 @@ static IntraRefreshMode star6e_pipeline_intra_refresh_derive(
 	memset(out_ir, 0, sizeof(*out_ir));
 	if (vcfg) {
 		mode = intra_refresh_parse_mode(vcfg->video0.intra_refresh_mode);
-		(void)codec; /* H.265 only */
+		/* Intra-refresh is codec-agnostic: MI_VENC_SetIntraRefresh takes
+		 * {bEnable, lines, qp} with no codec field and the cyclic intra-row
+		 * GDR works the same on H.264 and H.265.  codec is unused in the
+		 * derivation itself. */
+		(void)codec;
 		intra_refresh_compute(mode, height, fps,
 			vcfg->video0.intra_refresh_lines,
 			vcfg->video0.intra_refresh_qp,

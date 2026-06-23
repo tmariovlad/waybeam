@@ -618,9 +618,12 @@ load cleanly; the keys are silently ignored.
 `video0.codec` selects the video codec: `"h265"` (default) or `"h264"`.
 The selection flows end-to-end — encoder, RTP packetization (FU-A type 49 /
 28), RTP payload type (97 / 96), and TS-recording PMT (0x24 / 0x1B).
-Changing it is restart-required.  The resilience preset (intra-refresh +
-SVC-T refPred) and slice-split are H.265-tuned and inert under H.264, so
-prefer `h265` when running a resilience preset or multi-slice.
+Changing it is restart-required.  Resilience is at near-parity across codecs:
+**intra-refresh** (codec-agnostic `SetIntraRefresh`) and the **SVC-T refPred
+pyramid + non-reference marking** (`SetRefParam` + per-codec NAL rewrite: HEVC
+TRAIL_R→TRAIL_N, H.264 `nal_ref_idc`→0) both work on H.264.  The one
+H.265-only resilience lever is **multi-slice split** (`MI_VENC_SetH265SliceSplit`
+has no exposed H.264 counterpart) — `sliceRows` is ignored under H.264.
 
 | Field | Type | Mutability | Description |
 |-------|------|------------|-------------|
@@ -942,13 +945,14 @@ curl "http://<device>/api/v1/set?video0.resilience=fpv"
 ```
 
 Notes:
-- The resilience preset (intra-refresh + SVC-T refPred) is **H.265-only**:
-  the runtime rewrites the NAL header of frames the SDK marks
-  `ENHANCE_P_NOTFORREF` from `TRAIL_R` (type 1) to `TRAIL_N` (type 0) so a
-  generic HEVC decoder can identify non-reference frames and drop them cleanly
-  under loss.  H.264 is supported end-to-end (`video0.codec=h264`) but with the
-  basic profile — this refPred resilience is inert under H.264, so prefer
-  `h265` when running a resilience preset.
+- The resilience preset (intra-refresh + SVC-T refPred) works on **both
+  codecs**.  For the non-reference marking the runtime rewrites each
+  `ENHANCE_P_NOTFORREF` slice NAL header so a generic decoder can identify and
+  drop non-reference frames cleanly under loss: HEVC `TRAIL_R` (type 1) →
+  `TRAIL_N` (type 0); H.264 clears `nal_ref_idc` on the coded non-IDR slice
+  (→ non-reference picture).  `SetIntraRefresh` and `SetRefParam` are both
+  codec-agnostic SDK calls.  The only H.265-only resilience lever is
+  multi-slice split (`sliceRows`), which has no exposed H.264 SDK counterpart.
 - `video0.resilience` is the **only** user-facing knob for
   intra-refresh and refPred.  The underlying granular fields
   (`intra_refresh_*`, `ref_base`, `ref_enhance`, `ref_pred`) are
