@@ -356,8 +356,11 @@ Error `404`:
 {"ok":false,"error":{"code":"not_found","message":"unknown config field"}}
 ```
 
-Video codec is hardcoded H.265; the field was retired with the
-resilience-preset consolidation (see HISTORY 0.10.12).
+`video0.codec` selects the video codec (`h265` default / `h264`) and is
+restart-required.  It was retired in 0.10.12 and re-added end-to-end in 0.17.x
+(encoder + RTP FU-A + PT + TS PMT).  Unknown codec strings return a validation
+error; H.264 runs the basic resilience profile (intra-refresh / SVC-T refPred /
+slice-split are H.265-tuned and inert under H.264).
 
 Error `501` — apply callback not available:
 ```json
@@ -1289,11 +1292,13 @@ Behavior:
    returning. `/api/v1/defaults` persists compiled defaults. `/api/v1/restart`
    reloads the on-disk config and does not synthesize new changes by itself.
 
-2. **Video codec is hardcoded H.265.** The `video0.codec` field was
-   retired in 0.10.12. Setting it via `/api/v1/set` returns `404`
-   `unknown config field`. Legacy configs containing
-   `"codec": "h264"` or `"h265"` load cleanly — the key is ignored
-   and HEVC is used unconditionally.
+2. **Video codec is selectable (`video0.codec`).** Values `h265` (default)
+   or `h264`; restart-required. Selection flows end-to-end: encoder codec,
+   RTP FU-A (type 49 / 28), RTP payload type (97 / 96), TS PMT stream-type
+   (0x24 / 0x1B). Unknown values return a validation error. H.264 uses the
+   basic resilience profile — intra-refresh / SVC-T refPred / slice-split are
+   H.265-tuned and inert under H.264, so prefer `h265` with a resilience preset.
+   (Retired in 0.10.12, re-added end-to-end in 0.17.x.)
 
 3. **BusyBox compatibility.** All endpoints use `GET` method so they work with
    BusyBox `wget` (which only supports GET):
@@ -1326,7 +1331,7 @@ divergence is listed.  As of `contract_version: 0.10.1`:
 | `/api/v1/ae` | live + `runtime.active_precrop` | live + `runtime.active_precrop` | Both backends now include `runtime.active_precrop` in the AE response (Maruko parity landed in `0.8.4`). |
 | `/api/v1/transport/status` | yes | yes | SHM-ring fields are shown when `outgoing.server=shm://`; otherwise the UDP/Unix subset. |
 | `/api/v1/idr/stats` | yes | yes | Identical schema; values reflect each backend's IDR rate-limit. |
-| `video0.codec=h264` | 404 unknown_field | 404 unknown_field | Field retired in 0.10.12; codec is hardcoded H.265 on both backends. |
+| `video0.codec` (`h265` / `h264`) | applied (restart) | applied (restart) | Re-added: selects the video codec end-to-end (encoder + RTP FU-A type 28 / 49 + RTP PT 96/97 + TS PMT 0x1B/0x24). Default `h265`. Restart-required (codec change rebuilds the encode chain). H.264 uses the basic resilience profile — intra-refresh / SVC-T refPred / slice-split are HEVC-tuned and inert under H.264, so prefer `h265` for max wfb loss resilience. |
 | `video0.scene_threshold` / `scene_holdoff` | yes | yes | Restart-required fields; both backends run the shared scene detector. |
 | `video0.framing` / `zoom_x` / `zoom_y` | yes | partial | `framing` requires reinit; zoom presets work on both backends, the `stab` preset is Star6E-only (no-op on Maruko); `zoom_x/y` are live pan controls (ignored under `stab`). |
 | `isp.aeEngine` ("sdk" / "custom") | applied (legacy_ae mapping) | applied (ae_mode mapping) | Unified AE selector landed in 0.10.13.  `sdk` → SDK firmware AE on both backends.  `custom` → cus3a userspace AE; on Maruko this installs the no-op adaptor + 15 Hz supervisory thread (~24 % CPU saving at 120 fps). |

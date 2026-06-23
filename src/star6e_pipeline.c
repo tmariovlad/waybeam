@@ -1340,10 +1340,15 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	}
 
 	/* Multi-slice split (low-latency): each slice is independently decodable so the
-	 * RX can begin decoding before the whole frame arrives.  Codec is always H.265
-	 * here (see venc_config.h).  0 = single slice (SDK default), no call.  Applied
-	 * pre-StartRecvPic to match the SetRefParam convention above. */
-	if (vcfg->video0.slice_rows > 0) {
+	 * RX can begin decoding before the whole frame arrives.  0 = single slice
+	 * (SDK default), no call.  Applied pre-StartRecvPic to match the SetRefParam
+	 * convention above.  The split API is codec-specific (MI_VENC_SetH265SliceSplit);
+	 * only H.265 is wired — under H.264 we skip with a clear notice rather than
+	 * issue the HEVC call (which would WARN and silently give single-slice). */
+	if (vcfg->video0.slice_rows > 0 && codec == PT_H264) {
+		fprintf(stderr, "[waybeam] NOTE: video0.sliceRows ignored under H.264 "
+			"(only H.265 slice-split is wired) — single slice per frame\n");
+	} else if (vcfg->video0.slice_rows > 0) {
 		MI_VENC_ParamH265SliceSplit_t slice = {
 			.bSplitEnable = 1,
 			.u32SliceRowCount = vcfg->video0.slice_rows,

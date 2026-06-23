@@ -289,7 +289,8 @@ omitted fields keep their compiled-in defaults.
   ceiling, AWB mode, aspect-preserving crop.
 - **`image`** — mirror / flip / rotate.
 - **`video0`** — rate control, fps, resolution, bitrate, GOP,
-  per-section QP delta. Video codec is hardcoded H.265 (HEVC).
+  per-section QP delta. Video codec selectable via `video0.codec`
+  (`h265` default / `h264`).
   Scene-change-triggered IDR (`sceneThreshold`,
   `sceneHoldoff`) is Star6E-only. Intra-refresh is both backends. The
   `framing` knob expands to either digital zoom (both backends) or image
@@ -614,9 +615,12 @@ load cleanly; the keys are silently ignored.
 
 #### Video
 
-Video codec is hardcoded H.265 (HEVC) — there is no `video0.codec`
-field. Existing configs containing `"codec": "h264"` or `"h265"` load
-cleanly; the key is silently ignored.
+`video0.codec` selects the video codec: `"h265"` (default) or `"h264"`.
+The selection flows end-to-end — encoder, RTP packetization (FU-A type 49 /
+28), RTP payload type (97 / 96), and TS-recording PMT (0x24 / 0x1B).
+Changing it is restart-required.  The resilience preset (intra-refresh +
+SVC-T refPred) and slice-split are H.265-tuned and inert under H.264, so
+prefer `h265` when running a resilience preset or multi-slice.
 
 | Field | Type | Mutability | Description |
 |-------|------|------------|-------------|
@@ -938,10 +942,13 @@ curl "http://<device>/api/v1/set?video0.resilience=fpv"
 ```
 
 Notes:
-- H.265 only.  The runtime rewrites the NAL header of frames the SDK
-  marks `ENHANCE_P_NOTFORREF` from `TRAIL_R` (type 1) to `TRAIL_N`
-  (type 0) so a generic HEVC decoder can identify non-reference frames
-  and drop them cleanly under loss.
+- The resilience preset (intra-refresh + SVC-T refPred) is **H.265-only**:
+  the runtime rewrites the NAL header of frames the SDK marks
+  `ENHANCE_P_NOTFORREF` from `TRAIL_R` (type 1) to `TRAIL_N` (type 0) so a
+  generic HEVC decoder can identify non-reference frames and drop them cleanly
+  under loss.  H.264 is supported end-to-end (`video0.codec=h264`) but with the
+  basic profile — this refPred resilience is inert under H.264, so prefer
+  `h265` when running a resilience preset.
 - `video0.resilience` is the **only** user-facing knob for
   intra-refresh and refPred.  The underlying granular fields
   (`intra_refresh_*`, `ref_base`, `ref_enhance`, `ref_pred`) are

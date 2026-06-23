@@ -386,6 +386,7 @@ static const FieldDesc g_fields[] = {
 	FIELD(image, flip,             FT_BOOL,   MUT_RESTART),
 	FIELD(image, rotate,           FT_INT,    MUT_RESTART),
 
+	FIELD(video0, codec,           FT_STRING, MUT_RESTART),
 	FIELD(video0, rc_mode,         FT_STRING, MUT_RESTART),
 	FIELD(video0, fps,             FT_UINT,   MUT_LIVE),
 	{ "video0.size", FT_SIZE, MUT_RESTART,
@@ -446,6 +447,8 @@ static const FieldDesc g_fields[] = {
 	FIELD(snapshot, height,    FT_UINT,   MUT_RESTART),
 	FIELD(video0, scene_threshold,  FT_UINT16, MUT_RESTART),
 	FIELD(video0, scene_holdoff,   FT_UINT8,  MUT_RESTART),
+	FIELD(video0, slice_rows,       FT_UINT16, MUT_RESTART),
+	FIELD(video0, low_delay,        FT_BOOL,   MUT_RESTART),
 	FIELD(video0, resilience,           FT_STRING, MUT_RESTART),
 	/* zoom_x/y stay live for smooth panning via MI_VPE_SetPortCrop; the zoom
 	 * magnitude is part of the framing preset (derived zoom_pct), not a
@@ -523,6 +526,8 @@ static const FieldAlias g_field_aliases[] = {
 	{ "record.gopSize", "record.gop_size" },
 	{ "video0.sceneThreshold", "video0.scene_threshold" },
 	{ "video0.sceneHoldoff", "video0.scene_holdoff" },
+	{ "video0.sliceRows", "video0.slice_rows" },
+	{ "video0.lowDelay", "video0.low_delay" },
 	{ "video0.zoomX", "video0.zoom_x" },
 	{ "video0.zoomY", "video0.zoom_y" },
 	{ "video0.stabCropPct", "video0.stab_crop_pct" },
@@ -730,6 +735,12 @@ static const char *validate_field_cfg(const VencConfig *cfg, const char *key)
 		    access(cfg->isp.sensor_bin, R_OK) != 0)
 			return "isp.sensor_bin path is not readable";
 	}
+	if (strcmp(key, "video0.codec") == 0) {
+		const char *c = cfg->video0.codec;
+		if (strcmp(c, "h265") != 0 && strcmp(c, "hevc") != 0 &&
+		    strcmp(c, "h264") != 0 && strcmp(c, "avc") != 0)
+			return "codec must be 'h265' or 'h264'";
+	}
 	if (strcmp(key, "video0.qp_delta") == 0) {
 		if (cfg->video0.qp_delta < -12 || cfg->video0.qp_delta > 12)
 			return "qp_delta must be in range [-12, 12]";
@@ -843,6 +854,7 @@ const char *venc_api_validate_loaded_config(const VencConfig *cfg)
 	 * registered after config load, so they cannot run here. */
 	static const char *const keys[] = {
 		"isp.awb_mode",
+		"video0.codec",
 		"video0.bitrate",
 		"video0.qp_delta",
 		"video0.size",
@@ -872,8 +884,9 @@ const char *venc_api_validate_loaded_config(const VencConfig *cfg)
 /* ── Config validation ───────────────────────────────────────────────── */
 
 /* Check config consistency after a field change.  Returns NULL if valid,
- * or a static error message string if invalid.  Video codec is hardcoded
- * H.265, so the historical star6e/H.264 RTP gate is no longer required. */
+ * or a static error message string if invalid.  Video codec is selectable
+ * (video0.codec = h265 default / h264); the codec string itself is validated
+ * in validate_field_cfg(). */
 static const char *validate_backend_config(const char *backend_name,
 	const VencConfig *cfg)
 {
