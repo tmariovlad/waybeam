@@ -951,8 +951,10 @@ Notes:
   drop non-reference frames cleanly under loss: HEVC `TRAIL_R` (type 1) →
   `TRAIL_N` (type 0); H.264 clears `nal_ref_idc` on the coded non-IDR slice
   (→ non-reference picture).  `SetIntraRefresh` and `SetRefParam` are both
-  codec-agnostic SDK calls.  The only H.265-only resilience lever is
-  multi-slice split (`sliceRows`), which has no exposed H.264 SDK counterpart.
+  codec-agnostic SDK calls.  Multi-slice split (`sliceRows`) also works on both
+  codecs — the SDK exposes `MI_VENC_SetH264SliceSplit` / `…H265SliceSplit`
+  (same cfg struct), picked by codec.  So all resilience levers are at full
+  parity across H.264 and H.265.
 - `video0.resilience` is the **only** user-facing knob for
   intra-refresh and refPred.  The underlying granular fields
   (`intra_refresh_*`, `ref_base`, `ref_enhance`, `ref_pred`) are
