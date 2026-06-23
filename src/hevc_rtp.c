@@ -13,7 +13,7 @@ static void apply_stats(HevcRtpStats *stats, const RtpPacketizerResult *result)
 	stats->rtp_payload_bytes += result->payload_bytes;
 }
 
-size_t hevc_rtp_send_nal(const uint8_t *data, size_t len,
+size_t h26x_rtp_send_nal(PAYLOAD_TYPE_E codec, const uint8_t *data, size_t len,
 	RtpPacketizerState *rtp, RtpPacketizerWriteFn write_cb, void *opaque,
 	int is_last, size_t max_payload, HevcRtpStats *stats)
 {
@@ -26,14 +26,19 @@ size_t hevc_rtp_send_nal(const uint8_t *data, size_t len,
 	if (stats)
 		stats->total_nals++;
 
-	total_bytes = rtp_packetizer_send_hevc_nal(rtp, write_cb, opaque, data,
-		len, is_last, max_payload, stats ? &result : NULL);
+	if (codec == PT_H264)
+		total_bytes = rtp_packetizer_send_h264_nal(rtp, write_cb, opaque,
+			data, len, is_last, max_payload, stats ? &result : NULL);
+	else
+		total_bytes = rtp_packetizer_send_hevc_nal(rtp, write_cb, opaque,
+			data, len, is_last, max_payload, stats ? &result : NULL);
 	if (stats)
 		apply_stats(stats, &result);
 	return total_bytes;
 }
 
-size_t hevc_rtp_prepend_param_sets(const H26xParamSets *params, uint8_t nal_type,
+size_t h26x_rtp_prepend_param_sets(PAYLOAD_TYPE_E codec,
+	const H26xParamSets *params, uint8_t nal_type,
 	RtpPacketizerState *rtp, RtpPacketizerWriteFn write_cb, void *opaque,
 	size_t max_payload, HevcRtpStats *stats)
 {
@@ -45,12 +50,28 @@ size_t hevc_rtp_prepend_param_sets(const H26xParamSets *params, uint8_t nal_type
 	if (!params || !rtp)
 		return 0;
 
-	count = h26x_param_sets_get_prepend(params, PT_H265, nal_type, refs,
+	count = h26x_param_sets_get_prepend(params, codec, nal_type, refs,
 		sizeof(refs) / sizeof(refs[0]));
 	for (i = 0; i < count; ++i) {
-		total_bytes += hevc_rtp_send_nal(refs[i].data, refs[i].len,
+		total_bytes += h26x_rtp_send_nal(codec, refs[i].data, refs[i].len,
 			rtp, write_cb, opaque, 0, max_payload, stats);
 	}
 
 	return total_bytes;
+}
+
+size_t hevc_rtp_send_nal(const uint8_t *data, size_t len,
+	RtpPacketizerState *rtp, RtpPacketizerWriteFn write_cb, void *opaque,
+	int is_last, size_t max_payload, HevcRtpStats *stats)
+{
+	return h26x_rtp_send_nal(PT_H265, data, len, rtp, write_cb, opaque,
+		is_last, max_payload, stats);
+}
+
+size_t hevc_rtp_prepend_param_sets(const H26xParamSets *params, uint8_t nal_type,
+	RtpPacketizerState *rtp, RtpPacketizerWriteFn write_cb, void *opaque,
+	size_t max_payload, HevcRtpStats *stats)
+{
+	return h26x_rtp_prepend_param_sets(PT_H265, params, nal_type, rtp,
+		write_cb, opaque, max_payload, stats);
 }

@@ -193,6 +193,81 @@ static int test_rtp_packetizer_send_hevc_fu_partial_fail(void)
 	return failures;
 }
 
+static int test_rtp_packetizer_send_h264_single(void)
+{
+	int failures = 0;
+	TestRtpWriter writer = {.fail_at_call = -1};
+	RtpPacketizerState state = {
+		.seq = 0x0100,
+		.timestamp = 0x0A0B0C0D,
+		.ssrc = 0x10203040,
+		.payload_type = 96,
+	};
+	RtpPacketizerResult result;
+	/* 0x65 = F0 NRI3 type5 (IDR slice). */
+	const uint8_t nal[] = {0x65, 0xAA, 0xBB};
+
+	CHECK("rtp_pkt_h264_single",
+		rtp_packetizer_send_h264_nal(&state, test_rtp_writer, &writer, nal,
+			sizeof(nal), 1, 1400, &result) == sizeof(nal) &&
+		writer.call_count == 1 &&
+		state.seq == 0x0101);
+	CHECK("rtp_pkt_h264_single_result",
+		result.packet_count == 1 &&
+		result.payload_bytes == sizeof(nal) &&
+		result.fragmented == 0);
+	CHECK("rtp_pkt_h264_single_marker",
+		writer.writes[0].header[1] == (uint8_t)(0x80 | 96) &&
+		writer.writes[0].payload_len == sizeof(nal) &&
+		memcmp(writer.writes[0].payload, nal, sizeof(nal)) == 0);
+
+	return failures;
+}
+
+static int test_rtp_packetizer_send_h264_fu(void)
+{
+	int failures = 0;
+	TestRtpWriter writer = {.fail_at_call = -1};
+	RtpPacketizerState state = {
+		.seq = 0x2000,
+		.timestamp = 0x01010101,
+		.ssrc = 0x02020202,
+		.payload_type = 96,
+	};
+	RtpPacketizerResult result;
+	/* 0x65 = F0 NRI3 type5; payload AA BB CC DD EE (5 bytes after the
+	 * 1-byte NAL header).  max_payload 4 -> max_fragment 2 -> 3 fragments. */
+	const uint8_t nal[] = {0x65, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+
+	CHECK("rtp_pkt_h264_fu",
+		rtp_packetizer_send_h264_nal(&state, test_rtp_writer, &writer, nal,
+			sizeof(nal), 1, 4, &result) == sizeof(nal) &&
+		writer.call_count == 3 &&
+		state.seq == 0x2003);
+	CHECK("rtp_pkt_h264_fu_result",
+		result.packet_count == 3 &&
+		result.payload_bytes == 11 &&
+		result.fragmented == 1);
+	/* FU indicator = (0x65 & 0xE0) | 28 = 0x60 | 0x1C = 0x7C.
+	 * FU headers: start 0x80|5=0x85, mid 0x05, end 0x40|5=0x45. */
+	CHECK("rtp_pkt_h264_fu_fragments",
+		writer.writes[0].payload_len == 4 &&
+		writer.writes[1].payload_len == 4 &&
+		writer.writes[2].payload_len == 3 &&
+		writer.writes[0].payload[0] == 0x7C &&
+		writer.writes[0].payload[1] == 0x85 &&
+		writer.writes[1].payload[0] == 0x7C &&
+		writer.writes[1].payload[1] == 0x05 &&
+		writer.writes[2].payload[0] == 0x7C &&
+		writer.writes[2].payload[1] == 0x45 &&
+		writer.writes[0].payload[2] == 0xAA &&
+		writer.writes[2].payload[2] == 0xEE &&
+		writer.writes[0].header[1] == 96 &&
+		writer.writes[2].header[1] == (uint8_t)(0x80 | 96));
+
+	return failures;
+}
+
 int test_rtp_packetizer(void)
 {
 	int failures = 0;
@@ -214,6 +289,8 @@ int test_rtp_packetizer(void)
 	failures += test_rtp_packetizer_send_hevc_single();
 	failures += test_rtp_packetizer_send_hevc_fu();
 	failures += test_rtp_packetizer_send_hevc_fu_partial_fail();
+	failures += test_rtp_packetizer_send_h264_single();
+	failures += test_rtp_packetizer_send_h264_fu();
 
 	return failures;
 }

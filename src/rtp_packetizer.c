@@ -140,3 +140,92 @@ size_t rtp_packetizer_send_hevc_nal(RtpPacketizerState *state,
 	return rtp_packetizer_send_hevc_fu(state, writer, opaque, data, length,
 		is_last, max_payload, result);
 }
+
+size_t rtp_packetizer_send_h264_fu(RtpPacketizerState *state,
+	RtpPacketizerWriteFn writer, void *opaque, const uint8_t *data,
+	size_t length, int is_last, size_t max_payload,
+	RtpPacketizerResult *result)
+{
+	const uint8_t *payload;
+	size_t remaining;
+	size_t total_bytes = 0;
+	size_t max_fragment;
+	int start = 1;
+	uint8_t fu_hdr[2];
+	uint8_t nal_header;
+	uint8_t f_nri;
+	uint8_t nal_type;
+	uint8_t fu_indicator;
+
+	rtp_packetizer_reset_result(result);
+
+	/* H.264 NAL header is 1 byte; need at least header + 1 payload byte. */
+	if (!data || length <= 1 || !state || !writer || max_payload <= 2)
+		return 0;
+
+	if (max_payload > RTP_BUFFER_MAX)
+		max_payload = RTP_BUFFER_MAX;
+	max_fragment = max_payload - 2;
+
+	/* RFC 6184 5.8: FU indicator keeps F+NRI of the original NAL header and
+	 * sets type = 28 (FU-A).  FU header carries S/E/R + original type. */
+	nal_header = data[0];
+	f_nri = (uint8_t)(nal_header & 0xE0);
+	nal_type = (uint8_t)(nal_header & 0x1F);
+	fu_indicator = (uint8_t)(f_nri | 28);
+
+	payload = data + 1;
+	remaining = length - 1;
+	while (remaining > 0) {
+		size_t chunk = remaining > max_fragment ? max_fragment : remaining;
+		int end = (remaining == chunk);
+		int marker = (end && is_last) ? 1 : 0;
+
+		fu_hdr[0] = fu_indicator;
+		fu_hdr[1] = (uint8_t)((start ? 0x80 : 0x00) |
+			(end ? 0x40 : 0x00) | (nal_type & 0x1F));
+
+		if (rtp_packetizer_send_packet(state, writer, opaque,
+			fu_hdr, 2, payload, chunk, marker) != 0)
+			return total_bytes;
+
+		if (result) {
+			result->packet_count++;
+			result->payload_bytes += (uint32_t)(chunk + 2);
+			result->fragmented = 1;
+		}
+
+		total_bytes += chunk;
+		payload += chunk;
+		remaining -= chunk;
+		start = 0;
+	}
+
+	return total_bytes + 1;
+}
+
+size_t rtp_packetizer_send_h264_nal(RtpPacketizerState *state,
+	RtpPacketizerWriteFn writer, void *opaque, const uint8_t *data,
+	size_t length, int is_last, size_t max_payload,
+	RtpPacketizerResult *result)
+{
+	rtp_packetizer_reset_result(result);
+
+	if (!data || length == 0 || !state || !writer)
+		return 0;
+
+	if (length <= max_payload) {
+		if (rtp_packetizer_send_packet(state, writer, opaque, data,
+			length, NULL, 0, is_last ? 1 : 0) == 0) {
+			if (result) {
+				result->packet_count = 1;
+				result->payload_bytes = (uint32_t)length;
+			}
+			return length;
+		}
+		return 0;
+	}
+
+	return rtp_packetizer_send_h264_fu(state, writer, opaque, data, length,
+		is_last, max_payload, result);
+}

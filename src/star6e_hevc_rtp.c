@@ -13,7 +13,8 @@ static int star6e_hevc_rtp_write(const uint8_t *header, size_t header_len,
 		payload1, payload1_len, payload2, payload2_len);
 }
 
-size_t star6e_hevc_rtp_send_frame(const MI_VENC_Stream_t *stream,
+size_t star6e_hevc_rtp_send_frame_codec(PAYLOAD_TYPE_E codec,
+	const MI_VENC_Stream_t *stream,
 	Star6eOutput *output, RtpPacketizerState *rtp,
 	uint32_t frame_ticks, H26xParamSets *params, size_t max_payload,
 	Star6eHevcRtpStats *stats)
@@ -72,25 +73,31 @@ size_t star6e_hevc_rtp_send_frame(const MI_VENC_Stream_t *stream,
 			if (nal_len == 0)
 				continue;
 
-			nal_type = h26x_util_hevc_nalu_type(nal_ptr, nal_len);
-			if (pack->packNum > 0)
-				nal_type = (uint8_t)pack->packetInfo[k].packType.h265Nalu;
+			if (codec == PT_H264) {
+				nal_type = h26x_util_h264_nalu_type(nal_ptr, nal_len);
+				if (pack->packNum > 0)
+					nal_type = (uint8_t)pack->packetInfo[k].packType.h264Nalu;
+			} else {
+				nal_type = h26x_util_hevc_nalu_type(nal_ptr, nal_len);
+				if (pack->packNum > 0)
+					nal_type = (uint8_t)pack->packetInfo[k].packType.h265Nalu;
+			}
 
 			if (params)
-				h26x_param_sets_update(params, PT_H265, nal_type, nal_ptr, nal_len);
+				h26x_param_sets_update(params, codec, nal_type, nal_ptr, nal_len);
 
 			last_nal = (i == stream->count - 1) &&
 				((pack->packNum > 0 && k == nal_count - 1) ||
 				 (pack->packNum == 0));
 
 			if (params) {
-				total_bytes += hevc_rtp_prepend_param_sets(params,
+				total_bytes += h26x_rtp_prepend_param_sets(codec, params,
 					nal_type, rtp,
 					star6e_hevc_rtp_write, output, max_payload,
 					stats);
 			}
 
-			total_bytes += hevc_rtp_send_nal(nal_ptr, nal_len, rtp,
+			total_bytes += h26x_rtp_send_nal(codec, nal_ptr, nal_len, rtp,
 				star6e_hevc_rtp_write, output, last_nal, max_payload,
 				stats);
 		}
@@ -98,4 +105,13 @@ size_t star6e_hevc_rtp_send_frame(const MI_VENC_Stream_t *stream,
 
 	rtp->timestamp += frame_ticks;
 	return total_bytes;
+}
+
+size_t star6e_hevc_rtp_send_frame(const MI_VENC_Stream_t *stream,
+	Star6eOutput *output, RtpPacketizerState *rtp,
+	uint32_t frame_ticks, H26xParamSets *params, size_t max_payload,
+	Star6eHevcRtpStats *stats)
+{
+	return star6e_hevc_rtp_send_frame_codec(PT_H265, stream, output, rtp,
+		frame_ticks, params, max_payload, stats);
 }

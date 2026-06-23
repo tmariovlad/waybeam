@@ -42,4 +42,16 @@ size_t rtp_packetizer_send_hevc_nal(RtpPacketizerState *state,
 	size_t length, int is_last, size_t max_payload,
 	RtpPacketizerResult *result);
 
+/** Fragment and send a large H.264 NAL unit as FU-A packets (RFC 6184 5.8). */
+size_t rtp_packetizer_send_h264_fu(RtpPacketizerState *state,
+	RtpPacketizerWriteFn writer, void *opaque, const uint8_t *data,
+	size_t length, int is_last, size_t max_payload,
+	RtpPacketizerResult *result);
+
+/** Send H.264 NAL as single packet or fragment if exceeding max payload. */
+size_t rtp_packetizer_send_h264_nal(RtpPacketizerState *state,
+	RtpPacketizerWriteFn writer, void *opaque, const uint8_t *data,
+	size_t length, int is_last, size_t max_payload,
+	RtpPacketizerResult *result);
+
 #endif /* RTP_PACKETIZER_H */
