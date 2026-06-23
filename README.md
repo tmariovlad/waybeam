@@ -618,12 +618,12 @@ load cleanly; the keys are silently ignored.
 `video0.codec` selects the video codec: `"h265"` (default) or `"h264"`.
 The selection flows end-to-end — encoder, RTP packetization (FU-A type 49 /
 28), RTP payload type (97 / 96), and TS-recording PMT (0x24 / 0x1B).
-Changing it is restart-required.  Resilience is at near-parity across codecs:
-**intra-refresh** (codec-agnostic `SetIntraRefresh`) and the **SVC-T refPred
-pyramid + non-reference marking** (`SetRefParam` + per-codec NAL rewrite: HEVC
-TRAIL_R→TRAIL_N, H.264 `nal_ref_idc`→0) both work on H.264.  The one
-H.265-only resilience lever is **multi-slice split** (`MI_VENC_SetH265SliceSplit`
-has no exposed H.264 counterpart) — `sliceRows` is ignored under H.264.
+Changing it is restart-required.  **All resilience levers work on both
+codecs** (full parity): intra-refresh (codec-agnostic `SetIntraRefresh`),
+the SVC-T refPred pyramid + non-reference marking (`SetRefParam` + per-codec
+NAL rewrite: HEVC TRAIL_R→TRAIL_N, H.264 `nal_ref_idc`→0), and multi-slice
+split (`sliceRows` → `MI_VENC_SetH264SliceSplit` / `…H265SliceSplit`, picked
+by codec; both share the `{bSplitEnable, rowCount}` cfg).
 
 | Field | Type | Mutability | Description |
 |-------|------|------------|-------------|

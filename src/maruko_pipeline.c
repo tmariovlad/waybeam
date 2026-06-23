@@ -1724,15 +1724,16 @@ static int maruko_start_venc(const MarukoBackendConfig *cfg,
 	 * {MI_BOOL bSplitEnable; MI_U32 u32SliceRowCount} = {u32, u32}; declared
 	 * locally since the named SDK struct lives in the star6e header.  0 = single
 	 * slice (no call).  Best-effort: missing symbol → -1, warn, single slice. */
-	if (cfg->slice_rows > 0 && cfg->rc_codec == PT_H264) {
-		fprintf(stderr, "NOTE: [maruko] video0.sliceRows ignored under H.264 "
-			"(only H.265 slice-split is wired) — single slice per frame\n");
-	} else if (cfg->slice_rows > 0) {
+	if (cfg->slice_rows > 0) {
 		struct { unsigned int split_enable, slice_row_count; } slice = {
 			1, cfg->slice_rows };
-		if (maruko_mi_venc_set_slice_split(venc_dev, *chn, &slice) != 0)
-			fprintf(stderr, "WARNING: [maruko] SetH265SliceSplit(%u rows)"
+		int sret = (cfg->rc_codec == PT_H264)
+			? maruko_mi_venc_set_slice_split_h264(venc_dev, *chn, &slice)
+			: maruko_mi_venc_set_slice_split(venc_dev, *chn, &slice);
+		if (sret != 0)
+			fprintf(stderr, "WARNING: [maruko] Set%sSliceSplit(%u rows)"
 				" failed — single slice per frame\n",
+				cfg->rc_codec == PT_H264 ? "H264" : "H265",
 				cfg->slice_rows);
 	}
 

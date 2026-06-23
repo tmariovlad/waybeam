@@ -271,6 +271,10 @@ static int i6c_venc_load(maruko_venc_impl *venc)
 		int (*)(int, int, void *), "MI_VENC_SetRefParam");
 	LOAD_SYM(venc, "libmi_venc.so", fnGetRefParam,
 		int (*)(int, int, void *), "MI_VENC_GetRefParam");
+	LOAD_SYM(venc, "libmi_venc.so", fnSetH265SliceSplit,
+		int (*)(int, int, void *), "MI_VENC_SetH265SliceSplit");
+	LOAD_SYM(venc, "libmi_venc.so", fnSetH264SliceSplit,
+		int (*)(int, int, void *), "MI_VENC_SetH264SliceSplit");
 
 	if (!venc->fnCreateDev || !venc->fnDestroyDev ||
 	    !venc->fnCreateChn || !venc->fnDestroyChn ||

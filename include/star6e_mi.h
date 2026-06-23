@@ -100,6 +100,11 @@ typedef struct {
 	int (*fnGetIntraRefresh)(int chn, void *cfg);
 	int (*fnSetRefParam)(int chn, void *p);
 	int (*fnGetRefParam)(int chn, void *p);
+	/* Optional — multi-slice split (low-latency). NULL on older libmi_venc.so. */
+	int (*fnSetH265SliceSplit)(int chn, void *cfg);
+	int (*fnSetH264SliceSplit)(int chn, void *cfg);
+	/* Optional — VENC input source mode (ring buffer for low-delay pipeline). */
+	int (*fnSetInputSourceConfig)(int chn, void *cfg);
 } star6e_venc_impl;
 
 /* Global instances — defined in star6e_mi.c.
