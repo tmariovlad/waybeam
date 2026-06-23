@@ -1364,6 +1364,27 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 				vcfg->video0.slice_rows);
 	}
 
+	/* Super-frame cap (anti-spike): re-encode any frame exceeding the per-type
+	 * bit threshold so a single burst can't stall the wfb link.  P/B threshold
+	 * = superframe_kbits; I threshold = 4× (an IDR is legitimately larger).
+	 * Codec-agnostic SDK call.  Applied pre-StartRecvPic like slice-split. */
+	if (vcfg->video0.superframe_kbits > 0) {
+		MI_U32 thr = vcfg->video0.superframe_kbits * 1000;
+		MI_VENC_SuperFrameCfg_t sf = {
+			.eSuperFrmMode = MI_VENC_SUPERFRM_REENCODE,
+			.u32SuperIFrmBitsThr = thr * 4,
+			.u32SuperPFrmBitsThr = thr,
+			.u32SuperBFrmBitsThr = thr,
+		};
+		if (MI_VENC_SetSuperFrameCfg(*chn, &sf) != 0)
+			fprintf(stderr, "[waybeam] WARNING: SetSuperFrameCfg(%u kbits)"
+				" failed — no super-frame cap\n",
+				vcfg->video0.superframe_kbits);
+		else
+			fprintf(stderr, "[waybeam] super-frame cap: P=%u bits (re-encode)\n",
+				thr);
+	}
+
 	ret = MI_VENC_StartRecvPic(*chn);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_StartRecvPic failed %d\n", ret);

@@ -504,6 +504,26 @@ _Static_assert(sizeof(MI_VENC_ParamH265SliceSplit_t) == 8,
  * MI_VENC_SetH264SliceSplit / MI_VENC_SetH265SliceSplit on the same SoC. */
 typedef MI_VENC_ParamH265SliceSplit_t MI_VENC_ParamH264SliceSplit_t;
 
+/* Super-frame cap (low-latency / anti-bitrate-spike): when a coded frame
+ * exceeds the per-frame-type bit threshold the SDK re-encodes (or discards)
+ * it, capping the burst so a single big frame doesn't stall the link.  Layout
+ * confirmed against Divinus (i6_venc_superframe, "field-for-field verified"):
+ * {eSuperFrmMode, u32SuperIFrmBitsThr, u32SuperPFrmBitsThr, u32SuperBFrmBitsThr},
+ * sizeof 16. */
+typedef enum {
+	MI_VENC_SUPERFRM_NONE     = 0,
+	MI_VENC_SUPERFRM_DISCARD  = 1,
+	MI_VENC_SUPERFRM_REENCODE = 2,
+} MI_VENC_SuperFrmMode_e;
+typedef struct {
+	MI_U32 eSuperFrmMode;
+	MI_U32 u32SuperIFrmBitsThr;
+	MI_U32 u32SuperPFrmBitsThr;
+	MI_U32 u32SuperBFrmBitsThr;
+} MI_VENC_SuperFrameCfg_t;
+_Static_assert(sizeof(MI_VENC_SuperFrameCfg_t) == 16,
+	"MI_VENC_SuperFrameCfg_t layout changed — verify SDK match");
+
 /* MI_VENC ----------------------------------------------------------------- */
 #if defined(PLATFORM_MARUKO)
 #define MI_VENC_CreateChn(chn, attr)  g_mi_venc.fnCreateChn(0, (chn), (attr))
@@ -560,6 +580,9 @@ typedef MI_VENC_ParamH265SliceSplit_t MI_VENC_ParamH264SliceSplit_t;
 #define MI_VENC_SetH264SliceSplit(chn, cfg) \
 	(g_mi_venc.fnSetH264SliceSplit ? \
 		g_mi_venc.fnSetH264SliceSplit((chn), (cfg)) : -1)
+#define MI_VENC_SetSuperFrameCfg(chn, cfg) \
+	(g_mi_venc.fnSetSuperFrameCfg ? \
+		g_mi_venc.fnSetSuperFrameCfg((chn), (cfg)) : -1)
 #define MI_VENC_SetInputSourceConfig(chn, cfg) \
 	(g_mi_venc.fnSetInputSourceConfig ? \
 		g_mi_venc.fnSetInputSourceConfig((chn), (cfg)) : -1)

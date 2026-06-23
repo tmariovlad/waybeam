@@ -119,6 +119,7 @@ int maruko_config_from_venc(const VencConfig *vcfg, MarukoBackendConfig *cfg)
 	cfg->scene_threshold = vcfg->video0.scene_threshold;
 	cfg->scene_holdoff = vcfg->video0.scene_holdoff;
 	cfg->slice_rows = vcfg->video0.slice_rows;
+	cfg->superframe_kbits = vcfg->video0.superframe_kbits;
 	cfg->frame_lost = vcfg->video0.frame_lost ? 1 : 0;
 	snprintf(cfg->intra_refresh_mode, sizeof(cfg->intra_refresh_mode), "%s",
 		vcfg->video0.intra_refresh_mode);

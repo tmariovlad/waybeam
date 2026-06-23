@@ -91,6 +91,9 @@ typedef int (*maruko_isp_disable_userspace3a_fn_t)(MI_U32 dev_id, MI_U32 channel
 #define maruko_mi_venc_set_slice_split_h264(dev, chn, cfg) \
   (g_mi_venc.fnSetH264SliceSplit ? \
     g_mi_venc.fnSetH264SliceSplit((dev), (chn), (cfg)) : -1)
+#define maruko_mi_venc_set_superframe(dev, chn, cfg) \
+  (g_mi_venc.fnSetSuperFrameCfg ? \
+    g_mi_venc.fnSetSuperFrameCfg((dev), (chn), (cfg)) : -1)
 #define maruko_mi_sys_config_private_pool(soc, cfg) \
   g_mi_sys.fnConfigPrivateMMAPool((soc), (cfg))
 

@@ -1737,6 +1737,18 @@ static int maruko_start_venc(const MarukoBackendConfig *cfg,
 				cfg->slice_rows);
 	}
 
+	/* Super-frame cap (anti-spike, parity with star6e).  Struct declared
+	 * locally — {eSuperFrmMode, I/P/B bit thresholds}, sizeof 16.  Mode 2 =
+	 * REENCODE.  P/B threshold = superframe_kbits; I = 4×.  0 = off. */
+	if (cfg->superframe_kbits > 0) {
+		unsigned int thr = cfg->superframe_kbits * 1000;
+		struct { unsigned int mode, i_thr, p_thr, b_thr; } sf = {
+			2, thr * 4, thr, thr };
+		if (maruko_mi_venc_set_superframe(venc_dev, *chn, &sf) != 0)
+			fprintf(stderr, "WARNING: [maruko] SetSuperFrameCfg(%u kbits)"
+				" failed — no super-frame cap\n", cfg->superframe_kbits);
+	}
+
 	ret = maruko_mi_venc_start_recv(venc_dev, *chn);
 	if (ret != 0) {
 		fprintf(stderr,

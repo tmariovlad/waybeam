@@ -59,6 +59,8 @@ typedef struct {
 	int oc_level;
 	uint16_t scene_threshold;
 	uint8_t scene_holdoff;
+	uint16_t slice_rows;       /* multi-slice CTU rows/slice (0=single); parity with star6e */
+	uint32_t superframe_kbits; /* super-frame cap (0=off); anti-spike, parity with star6e */
 	uint8_t frame_lost;
 	/* IntraRefresh (GDR-style rolling stripe) — applied to ch0 after
 	 * StartRecvPic.  Mirror of VencConfig::video0.intra_refresh_{mode,lines,qp}.

@@ -103,6 +103,8 @@ typedef struct {
 	/* Optional — multi-slice split (low-latency). NULL on older libmi_venc.so. */
 	int (*fnSetH265SliceSplit)(int chn, void *cfg);
 	int (*fnSetH264SliceSplit)(int chn, void *cfg);
+	/* Optional — super-frame cap (anti-spike). NULL on older libmi_venc.so. */
+	int (*fnSetSuperFrameCfg)(int chn, void *cfg);
 	/* Optional — VENC input source mode (ring buffer for low-delay pipeline). */
 	int (*fnSetInputSourceConfig)(int chn, void *cfg);
 } star6e_venc_impl;

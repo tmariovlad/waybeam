@@ -101,6 +101,9 @@ typedef struct {
 	uint16_t slice_rows;       /* multi-slice: CTU rows per slice (0=single slice). Each slice
 	                            * is independently decodable → RX starts decode before the full
 	                            * frame arrives (lower decode latency + loss resilience on wfb). */
+	uint32_t superframe_kbits; /* super-frame cap (0=off): re-encode any frame whose size exceeds
+	                            * this many kbits (P/B threshold; I threshold = 4×) so a single
+	                            * burst can't stall the link.  Anti-spike → steadier wfb latency. */
 	bool low_delay;            /* low-delay pipeline: VPE→VENC ch0 REALTIME + ring-buffer input,
 	                            * so the encoder starts before the full frame is ready (~2-3ms
 	                            * saved, doc LOW_DELAY_PIPELINE.md). ch0 stream only — ch1 record

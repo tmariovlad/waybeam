@@ -275,6 +275,8 @@ static int i6c_venc_load(maruko_venc_impl *venc)
 		int (*)(int, int, void *), "MI_VENC_SetH265SliceSplit");
 	LOAD_SYM(venc, "libmi_venc.so", fnSetH264SliceSplit,
 		int (*)(int, int, void *), "MI_VENC_SetH264SliceSplit");
+	LOAD_SYM(venc, "libmi_venc.so", fnSetSuperFrameCfg,
+		int (*)(int, int, void *), "MI_VENC_SetSuperFrameCfg");
 
 	if (!venc->fnCreateDev || !venc->fnDestroyDev ||
 	    !venc->fnCreateChn || !venc->fnDestroyChn ||

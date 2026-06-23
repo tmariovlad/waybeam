@@ -138,6 +138,7 @@ typedef struct {
 	/* Optional — multi-slice split (parity with star6e). NULL on older SDK. */
 	int (*fnSetH265SliceSplit)(int dev, int chn, void *cfg);
 	int (*fnSetH264SliceSplit)(int dev, int chn, void *cfg);
+	int (*fnSetSuperFrameCfg)(int dev, int chn, void *cfg);
 } maruko_venc_impl;
 
 /* MI_AI (audio input) — i6c surface differs from Star6E:
