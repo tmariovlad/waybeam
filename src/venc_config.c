@@ -104,7 +104,8 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->image.flip = false;
 	cfg->image.rotate = 0;
 
-	/* video0 — codec is hardcoded H.265, see VencConfigVideo doc */
+	/* video0 — codec defaults to H.265 (see VencConfigVideo doc) */
+	safe_strcpy(cfg->video0.codec, sizeof(cfg->video0.codec), "h265");
 	safe_strcpy(cfg->video0.rc_mode, sizeof(cfg->video0.rc_mode), "cbr");
 	cfg->video0.fps = 60;
 	cfg->video0.width = 0;
@@ -162,6 +163,8 @@ void venc_config_defaults(VencConfig *cfg)
 	/* scene detection (video0) */
 	cfg->video0.scene_threshold = 0;   /* 0 = off */
 	cfg->video0.scene_holdoff = 2;
+	cfg->video0.slice_rows = 0;        /* 0 = single slice (default) */
+	cfg->video0.low_delay = false;     /* off = FRAMEBASE (current behaviour) */
 
 	/* intra refresh (video0) — disabled by default; mode-driven */
 	safe_strcpy(cfg->video0.intra_refresh_mode,
@@ -507,9 +510,8 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 	const cJSON *obj = cJSON_GetObjectItemCaseSensitive(root, "video0");
 	if (!obj) return;
 
-	/* "codec" is silently ignored — H.265 is hardcoded.  Existing
-	 * configs that set codec="h264" load cleanly; the value is
-	 * dropped and HEVC is used. */
+	safe_strcpy(v->codec, sizeof(v->codec),
+		json_get_string(obj, "codec", v->codec));
 	safe_strcpy(v->rc_mode, sizeof(v->rc_mode),
 		json_get_string(obj, "rcMode", v->rc_mode));
 	v->fps = (uint32_t)json_get_int(obj, "fps", (int)v->fps);
@@ -540,6 +542,8 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 	v->scene_holdoff = (uint8_t)json_get_int(obj, "sceneHoldoff",
 		(int)v->scene_holdoff);
 	if (v->scene_holdoff < 1 && v->scene_threshold > 0) v->scene_holdoff = 1;
+	v->slice_rows = (uint16_t)json_get_int(obj, "sliceRows", (int)v->slice_rows);
+	v->low_delay = json_get_bool(obj, "lowDelay", v->low_delay);
 
 	/* Resilience preset is the sole driver of intra-refresh + SVC-T
 	 * (refPred).  For named presets it also overrides gop_size; only
@@ -1147,6 +1151,7 @@ static void render_image(PrettyBuf *p, const VencConfig *cfg, int is_last)
 static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 {
 	pp_section_open(p, 1, "video0");
+	pp_field_string(p, 2, "codec",  cfg->video0.codec,  0);
 	pp_field_string(p, 2, "rcMode", cfg->video0.rc_mode, 0);
 	pp_field_uint(p,   2, "fps",    cfg->video0.fps,    0);
 	if (cfg->video0.width > 0 && cfg->video0.height > 0) {
@@ -1163,6 +1168,8 @@ static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_bool(p,   2, "frameLost",      cfg->video0.frame_lost,      0);
 	pp_field_uint(p,   2, "sceneThreshold", cfg->video0.scene_threshold, 0);
 	pp_field_uint(p,   2, "sceneHoldoff",   cfg->video0.scene_holdoff,   0);
+	pp_field_uint(p,   2, "sliceRows",      cfg->video0.slice_rows,      0);
+	pp_field_bool(p,   2, "lowDelay",       cfg->video0.low_delay,       0);
 	pp_field_string(p, 2, "resilience",        cfg->video0.resilience,          0);
 	pp_field_double(p, 2, "zoomX",             cfg->video0.zoom_x,              0);
 	pp_field_double(p, 2, "zoomY",             cfg->video0.zoom_y,              0);
@@ -1335,6 +1342,7 @@ static cJSON *config_to_cjson(const VencConfig *cfg)
 	/* video0 */
 	cJSON *vid = cJSON_AddObjectToObject(root, "video0");
 	if (vid) {
+		cJSON_AddStringToObject(vid, "codec", cfg->video0.codec);
 		cJSON_AddStringToObject(vid, "rcMode", cfg->video0.rc_mode);
 		cJSON_AddNumberToObject(vid, "fps", cfg->video0.fps);
 		if (cfg->video0.width > 0 && cfg->video0.height > 0) {

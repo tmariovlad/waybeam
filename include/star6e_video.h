@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 typedef struct {
+	PAYLOAD_TYPE_E codec;          /* PT_H265 (default) or PT_H264 */
 	RtpPacketizerState rtp_state;
 	uint32_t rtp_frame_ticks;
 	H26xParamSets param_sets;

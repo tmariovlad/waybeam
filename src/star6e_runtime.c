@@ -1,6 +1,7 @@
 #include "star6e_runtime.h"
 
 #include "audio_codec.h"
+#include "codec_config.h"
 #include "debug_osd.h"
 #include "idr_rate_limit.h"
 #include "imu_bmi270.h"
@@ -152,8 +153,10 @@ static void star6e_patch_stream_to_trail_n(MI_VENC_Stream_t *s)
 		star6e_patch_pack_to_trail_n(&s->packet[i]);
 }
 
-/* HEVC-only since 0.10.12: IDR_W_RADL = nal_type 19. */
-static uint8_t star6e_scene_is_idr(const MI_VENC_Stream_t *s)
+/* IDR NAL type per codec: HEVC IDR_W_RADL = 19, H.264 IDR slice = 5.
+ * The packType/naluType union is read with the codec-matching member. */
+static uint8_t star6e_scene_is_idr(PAYLOAD_TYPE_E codec,
+	const MI_VENC_Stream_t *s)
 {
 	unsigned int i;
 	if (!s || !s->packet) return 0;
@@ -162,11 +165,17 @@ static uint8_t star6e_scene_is_idr(const MI_VENC_Stream_t *s)
 		unsigned int k, n = p->packNum > 8 ? 8 : p->packNum;
 		if (n > 0) {
 			for (k = 0; k < n; k++) {
-				if (p->packetInfo[k].packType.h265Nalu == 19)
+				if (codec == PT_H264) {
+					if (p->packetInfo[k].packType.h264Nalu == 5)
+						return 1;
+				} else if (p->packetInfo[k].packType.h265Nalu == 19) {
 					return 1;
+				}
 			}
-		} else {
-			if (p->naluType.h265Nalu == 19) return 1;
+		} else if (codec == PT_H264) {
+			if (p->naluType.h264Nalu == 5) return 1;
+		} else if (p->naluType.h265Nalu == 19) {
+			return 1;
 		}
 	}
 	return 0;
@@ -626,7 +635,12 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 			rate = vcfg->audio.sample_rate;
 			ch   = (uint8_t)vcfg->audio.channels;
 		}
-		star6e_ts_recorder_init(&ps->ts_recorder, rate, ch, ts_codec);
+		PAYLOAD_TYPE_E vcodec;
+		if (codec_config_resolve_codec(vcfg->video0.codec, &vcodec) != 0)
+			vcodec = PT_H265;
+		star6e_ts_recorder_init(&ps->ts_recorder,
+			vcodec == PT_H264 ? TS_VIDEO_CODEC_H264 : TS_VIDEO_CODEC_HEVC,
+			rate, ch, ts_codec);
 	}
 	ps->ts_recorder.request_idr = runtime_request_idr;
 	if (vcfg->record.max_seconds > 0)
@@ -778,6 +792,30 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 	MI_VENC_Stream_t stream = {0};
 	int ret;
 
+	/* Block on MI_VENC_GetFd(chn) via poll() instead of spinning on Query +
+	 * blind 1 ms sleep: the fd signals POLLIN exactly when a frame is ready, so
+	 * we wake once per frame instead of churning Query/sidecar-poll syscalls.
+	 * Same battle-tested pattern as the dual-record thread (:414-465) and the
+	 * maruko main loop — brings the star6e ch0 main loop to parity (it was the
+	 * last wait-path never converted, HISTORY PR-C/C.1). fd is cached across
+	 * calls; on POLLERR (channel reinit/VPE unbind) we drop to -1 and the next
+	 * call re-acquires it via GetFd. fd<0 → idle_wait fallback below (unchanged). */
+	static int s_venc_fd = -1;
+	if (s_venc_fd < 0)
+		s_venc_fd = MI_VENC_GetFd(ps->venc_channel);
+	if (s_venc_fd >= 0) {
+		struct pollfd pfd = { .fd = s_venc_fd, .events = POLLIN };
+		(void)poll(&pfd, 1, 1000);  /* large timeout: caps shutdown latency, frames arrive far sooner */
+		if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+			MI_VENC_CloseFd(ps->venc_channel);
+			s_venc_fd = -1;  /* re-acquire next call (e.g. after pipeline reinit) */
+		} else if (!(pfd.revents & POLLIN)) {
+			/* timeout / spurious wake — still tick 3A so AE/AWB don't stall */
+			star6e_pipeline_cus3a_tick(&g_sdk_quiet, cus3a_ts_last);
+			return 0;
+		}
+	}
+
 	ret = MI_VENC_Query(ps->venc_channel, &stat);
 	if (ret != 0) {
 		if ((++(*idle_counter) % 60) == 0) {
@@ -834,7 +872,11 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 	 *
 	 * Only active when refPred is enabled (ref_base > 0) — otherwise the
 	 * encoder produces a flat single-ref stream and every frame matters. */
-	if (vcfg->video0.ref_base > 0 &&
+	/* SVC-T trail_n patch reads stream.h265Info — HEVC-only semantics.
+	 * ref_base is set exclusively by HEVC resilience presets, so this is
+	 * already inert for H.264; gate on codec as well to make that explicit
+	 * and avoid reading the h265Info union member under H.264. */
+	if (ps->video.codec != PT_H264 && vcfg->video0.ref_base > 0 &&
 	    stream.h265Info.refType == SS_REFTYPE_ENHANCE_P_NOTFORREF) {
 		star6e_patch_stream_to_trail_n(&stream);
 	}
@@ -842,7 +884,7 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 	{
 		RtpSidecarEncInfo enc_info;
 		uint32_t frame_size = star6e_scene_frame_size(&stream);
-		uint8_t is_idr = star6e_scene_is_idr(&stream);
+		uint8_t is_idr = star6e_scene_is_idr(ps->video.codec, &stream);
 
 		scene_update(&ctx->scene, frame_size, is_idr,
 			star6e_scene_request_idr, &ps->venc_channel);

@@ -38,10 +38,16 @@ int maruko_ts_recorder_write_stream(Star6eTsRecorderState *state,
 				    len > (pack->length - off))
 					continue;
 
-				unsigned int nalu = (unsigned int)
-					pack->packetInfo[k].packType.h265Nalu;
-				if (nalu == 19 || nalu == 20)
-					is_idr = 1;
+				/* HEVC: IDR_W_RADL=19 / IDR_N_LP=20.  H.264: IDR=5. */
+				if (state->mux.video_codec == TS_VIDEO_CODEC_H264) {
+					if (pack->packetInfo[k].packType.h264Nalu == 5)
+						is_idr = 1;
+				} else {
+					unsigned int nalu = (unsigned int)
+						pack->packetInfo[k].packType.h265Nalu;
+					if (nalu == 19 || nalu == 20)
+						is_idr = 1;
+				}
 
 				if (nal_len + len > sizeof(nal_buf)) {
 					fprintf(stderr,

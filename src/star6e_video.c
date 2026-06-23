@@ -1,6 +1,7 @@
 #include "star6e_video.h"
 #include "star6e_audio.h"
 
+#include "codec_config.h"
 #include "output_socket.h"
 #include "rtp_session.h"
 #include "timing.h"
@@ -9,6 +10,7 @@
 #include <string.h>
 
 typedef struct {
+	PAYLOAD_TYPE_E codec;
 	RtpPacketizerState *rtp;
 	uint32_t frame_ticks;
 	H26xParamSets *params;
@@ -24,8 +26,9 @@ static size_t send_frame_output_rtp(Star6eOutput *output,
 	if (!ctx)
 		return 0;
 
-	return star6e_hevc_rtp_send_frame(stream, output, ctx->rtp,
-		ctx->frame_ticks, ctx->params, ctx->max_payload, ctx->stats);
+	return star6e_hevc_rtp_send_frame_codec(ctx->codec, stream, output,
+		ctx->rtp, ctx->frame_ticks, ctx->params, ctx->max_payload,
+		ctx->stats);
 }
 
 void star6e_video_reset(Star6eVideoState *state)
@@ -51,6 +54,10 @@ void star6e_video_init(Star6eVideoState *state, const VencConfig *vcfg,
 	 * across the upcoming memset. */
 	rtp_sidecar_sender_close(&state->sidecar);
 	memset(state, 0, sizeof(*state));
+	/* Resolve codec after the memset (PT_H264 == 0 would be masked by it).
+	 * Defaults to PT_H265 on any parse error — never silently mis-route. */
+	if (codec_config_resolve_codec(vcfg->video0.codec, &state->codec) != 0)
+		state->codec = PT_H265;
 	state->sensor_framerate = sensor_framerate;
 	state->max_frame_size = vcfg->outgoing.max_payload_size;
 	state->rtp_payload_size = vcfg->outgoing.max_payload_size;
@@ -58,7 +65,7 @@ void star6e_video_init(Star6eVideoState *state, const VencConfig *vcfg,
 	if (output && star6e_output_is_rtp(output)) {
 		RtpSessionState session;
 
-		rtp_session_init(&session, rtp_session_payload_type(PT_H265),
+		rtp_session_init(&session, rtp_session_payload_type(state->codec),
 			sensor_framerate);
 		state->rtp_state.seq = session.seq;
 		state->rtp_state.timestamp = session.timestamp;
@@ -92,6 +99,7 @@ size_t star6e_video_send_frame(Star6eVideoState *state,
 
 	if (output_enabled) {
 		Star6eRtpFrameContext rtp_frame = {
+			.codec = state->codec,
 			.rtp = &state->rtp_state,
 			.frame_ticks = state->rtp_frame_ticks,
 			.params = &state->param_sets,

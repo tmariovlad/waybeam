@@ -10,7 +10,7 @@ static int test_ts_mux_init(void)
 	TsMuxState s;
 	int failures = 0;
 
-	ts_mux_init(&s, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
 	CHECK("ts_mux init cc_pat", s.cc_pat == 0);
 	CHECK("ts_mux init cc_pmt", s.cc_pmt == 0);
 	CHECK("ts_mux init cc_video", s.cc_video == 0);
@@ -20,7 +20,7 @@ static int test_ts_mux_init(void)
 	CHECK("ts_mux init video_frames forces pat/pmt",
 		s.video_frames >= TS_PAT_PMT_INTERVAL);
 
-	ts_mux_init(NULL, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(NULL, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 	CHECK("ts_mux init null no crash", 1);
 	return failures;
 }
@@ -32,7 +32,7 @@ static int test_ts_mux_pat_pmt(void)
 	size_t written;
 	int failures = 0;
 
-	ts_mux_init(&s, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
 	written = ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
 	CHECK("pat_pmt writes 2 packets", written == 2 * TS_PACKET_SIZE);
 
@@ -55,6 +55,44 @@ static int test_ts_mux_pat_pmt(void)
 	return failures;
 }
 
+/* PMT layout: TS header(4) + pointer_field(1) + table_id(1) +
+ * section_length(2) + program_number(2) + flags(1) + section_number(1) +
+ * last_section_number(1) + PCR_PID(2) + program_info_length(2) = byte 17 is
+ * the first elementary-stream's stream_type. */
+#define PMT_VIDEO_STREAM_TYPE_OFF 17
+
+static int test_ts_mux_pmt_codec(void)
+{
+	TsMuxState s;
+	uint8_t buf[2 * TS_PACKET_SIZE];
+	uint8_t *pmt;
+	int failures = 0;
+
+	/* HEVC: stream_type 0x24, "HEVC" registration descriptor present. */
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
+	pmt = buf + TS_PACKET_SIZE;
+	CHECK("pmt hevc stream_type 0x24",
+		pmt[PMT_VIDEO_STREAM_TYPE_OFF] == TS_STREAM_TYPE_HEVC);
+	CHECK("pmt hevc has HEVC registration",
+		memmem(pmt, TS_PACKET_SIZE, "HEVC", 4) != NULL);
+
+	/* H.264: stream_type 0x1B, no registration descriptor. */
+	ts_mux_init(&s, TS_VIDEO_CODEC_H264, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
+	pmt = buf + TS_PACKET_SIZE;
+	CHECK("pmt h264 stream_type 0x1B",
+		pmt[PMT_VIDEO_STREAM_TYPE_OFF] == TS_STREAM_TYPE_H264);
+	CHECK("pmt h264 ES_info_length 0",
+		pmt[PMT_VIDEO_STREAM_TYPE_OFF + 3] == 0xF0 &&
+		pmt[PMT_VIDEO_STREAM_TYPE_OFF + 4] == 0x00);
+	CHECK("pmt h264 no HEVC registration",
+		memmem(pmt, TS_PACKET_SIZE, "HEVC", 4) == NULL);
+	CHECK("pmt h264 video_codec stored", s.video_codec == TS_VIDEO_CODEC_H264);
+
+	return failures;
+}
+
 static int test_ts_mux_pat_pmt_no_audio(void)
 {
 	TsMuxState s;
@@ -62,7 +100,7 @@ static int test_ts_mux_pat_pmt_no_audio(void)
 	size_t written;
 	int failures = 0;
 
-	ts_mux_init(&s, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 	written = ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
 	CHECK("pat_pmt no audio writes 2 packets", written == 2 * TS_PACKET_SIZE);
 	CHECK("pat_pmt no audio sync", buf[0] == TS_SYNC_BYTE);
@@ -75,7 +113,7 @@ static int test_ts_mux_pat_pmt_small_buf(void)
 	uint8_t buf[100];
 	int failures = 0;
 
-	ts_mux_init(&s, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
 	CHECK("pat_pmt small buf returns 0",
 		ts_mux_write_pat_pmt(&s, buf, sizeof(buf)) == 0);
 	return failures;
@@ -91,7 +129,7 @@ static int test_ts_mux_write_video(void)
 	int failures = 0;
 
 	memset(data, 0xAB, sizeof(data));
-	ts_mux_init(&s, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 16000, 1, TS_AUDIO_CODEC_PCM_S302M);
 
 	written = ts_mux_write_video(&s, buf, sizeof(buf),
 		data, sizeof(data), 90000, 1);
@@ -132,7 +170,7 @@ static int test_ts_mux_write_video_no_patpmt(void)
 	int failures = 0;
 
 	memset(data, 0xCD, sizeof(data));
-	ts_mux_init(&s, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 
 	/* Write first frame — consumes PAT/PMT */
 	ts_mux_write_video(&s, buf, sizeof(buf), data, sizeof(data), 90000, 0);
@@ -158,7 +196,7 @@ static int test_ts_mux_write_audio(void)
 	int failures = 0;
 
 	memset(data, 0x55, sizeof(data));
-	ts_mux_init(&s, 48000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 48000, 1, TS_AUDIO_CODEC_PCM_S302M);
 
 	written = ts_mux_write_audio(&s, buf, sizeof(buf),
 		data, sizeof(data), 45000);
@@ -191,7 +229,7 @@ static int test_ts_mux_audio_bssd_descriptor(void)
 	uint8_t buf[2 * TS_PACKET_SIZE];
 	int failures = 0;
 
-	ts_mux_init(&s, 48000, 1, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 48000, 1, TS_AUDIO_CODEC_PCM_S302M);
 	ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
 
 	/* Search the PMT packet for the 4-byte "BSSD" registration tag. */
@@ -214,7 +252,7 @@ static int test_ts_mux_audio_opus_pmt(void)
 	uint8_t buf[2 * TS_PACKET_SIZE];
 	int failures = 0;
 
-	ts_mux_init(&s, 48000, 1, TS_AUDIO_CODEC_OPUS);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 48000, 1, TS_AUDIO_CODEC_OPUS);
 	ts_mux_write_pat_pmt(&s, buf, sizeof(buf));
 
 	const uint8_t *pmt = buf + TS_PACKET_SIZE;
@@ -243,7 +281,7 @@ static int test_ts_mux_write_audio_opus(void)
 	int failures = 0;
 
 	memset(opus, 0xAA, sizeof(opus));
-	ts_mux_init(&s, 48000, 1, TS_AUDIO_CODEC_OPUS);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 48000, 1, TS_AUDIO_CODEC_OPUS);
 
 	written = ts_mux_write_audio(&s, buf, sizeof(buf),
 		opus, sizeof(opus), 90000);
@@ -269,7 +307,7 @@ static int test_ts_mux_write_null_args(void)
 	uint8_t data[10];
 	int failures = 0;
 
-	ts_mux_init(&s, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 	CHECK("write_video null state",
 		ts_mux_write_video(NULL, buf, sizeof(buf), data, 10, 0, 0) == 0);
 	CHECK("write_video null buf",
@@ -304,7 +342,7 @@ static int test_ts_mux_cc_wraps(void)
 	int failures = 0;
 
 	memset(data, 0x01, sizeof(data));
-	ts_mux_init(&s, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 	s.video_frames = 0;  /* prevent PAT/PMT */
 
 	/* Write 20 frames — CC should wrap at 16 */
@@ -325,7 +363,7 @@ static int test_ts_mux_small_data(void)
 	size_t written;
 	int failures = 0;
 
-	ts_mux_init(&s, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
+	ts_mux_init(&s, TS_VIDEO_CODEC_HEVC, 0, 0, TS_AUDIO_CODEC_PCM_S302M);
 	s.video_frames = 0;
 
 	written = ts_mux_write_video(&s, buf, sizeof(buf),
@@ -342,6 +380,7 @@ int test_ts_mux(void)
 
 	failures += test_ts_mux_init();
 	failures += test_ts_mux_pat_pmt();
+	failures += test_ts_mux_pmt_codec();
 	failures += test_ts_mux_pat_pmt_no_audio();
 	failures += test_ts_mux_pat_pmt_small_buf();
 	failures += test_ts_mux_write_video();

@@ -82,9 +82,12 @@ typedef struct {
 } VencConfigImage;
 
 typedef struct {
-	/* Video codec is always H.265 — the encoder, RTP path, intra-refresh
-	 * scheduler, and SVC-T refPred all assume HEVC.  H.264 was retired
-	 * with the resilience-preset consolidation. */
+	/* Video codec.  HEVC is the tuned default (intra-refresh scheduler +
+	 * SVC-T refPred assume HEVC NAL types); H.264 is supported end-to-end
+	 * on the star6e backend (encoder + RTP FU-A type 28 + IDR detect).
+	 * SVC-T refPred / scene-IDR tuning still keys off HEVC NAL semantics,
+	 * so prefer h265 when those resilience presets are active. */
+	char codec[8];         /* "h265" (default) or "h264" */
 	char rc_mode[16];      /* "cbr", "vbr", "avbr", "qvbr" */
 	uint32_t fps;
 	uint32_t width;
@@ -95,6 +98,13 @@ typedef struct {
 	bool frame_lost;           /* enable frame-lost safety net */
 	uint16_t scene_threshold;  /* frame size spike ratio x100 for scene IDR (0=off, 150=1.5x) */
 	uint8_t scene_holdoff;     /* consecutive frames above threshold to trigger */
+	uint16_t slice_rows;       /* multi-slice: CTU rows per slice (0=single slice). Each slice
+	                            * is independently decodable → RX starts decode before the full
+	                            * frame arrives (lower decode latency + loss resilience on wfb). */
+	bool low_delay;            /* low-delay pipeline: VPE→VENC ch0 REALTIME + ring-buffer input,
+	                            * so the encoder starts before the full frame is ready (~2-3ms
+	                            * saved, doc LOW_DELAY_PIPELINE.md). ch0 stream only — ch1 record
+	                            * stays FRAMEBASE (deep buffer for SD stall tolerance). Default off. */
 	/* Derived from `resilience` preset only.  Not part of the JSON
 	 * schema or HTTP API — written exclusively by
 	 * apply_resilience_preset() at load time.  Do not parse from JSON,

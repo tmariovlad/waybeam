@@ -427,7 +427,7 @@ static Star6ePrecropRect star6e_pipeline_compute_precrop(uint32_t sensor_w,
 }
 
 static int star6e_pipeline_start_vif(const SensorSelectResult *sensor,
-	const Star6ePrecropRect *precrop)
+	const Star6ePrecropRect *precrop, bool low_delay)
 {
 	MI_VIF_DevAttr_t dev = {0};
 	MI_VIF_PortAttr_t port = {0};
@@ -474,7 +474,12 @@ static int star6e_pipeline_start_vif(const SensorSelectResult *sensor,
 			sensor->plane.precision * I6_BAYER_END + sensor->plane.bayer);
 	}
 	port.frate = I6_VIF_FRATE_FULL;
-	port.frameLineCnt = 0;
+	/* Low-delay step 3 (doc LOW_DELAY_PIPELINE.md §3): emit VIF output every
+	 * quarter-frame so the downstream REALTIME chain can start before the full
+	 * frame is captured.  Meaningful ONLY with the full REALTIME chain (VIF→VPE
+	 * is already REALTIME; VPE→VENC becomes REALTIME under low_delay) — alone it
+	 * gives no measurable benefit, so gate it on low_delay.  0 = whole-frame. */
+	port.frameLineCnt = low_delay ? (precrop->h / 4) : 0;
 
 	ret = MI_VIF_SetChnPortAttr(0, 0, &port);
 	if (ret != 0) {
@@ -1321,6 +1326,37 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	 * StartRecvPic, producing a flat single-layer stream. */
 	(void)star6e_pipeline_pre_start_apply_ref_pred(*chn, vcfg);
 
+	/* Low-delay: ring-buffer VENC input.  Valid ONLY with REALTIME binding (the
+	 * pipeline stall seen historically was RING_ONE_FRM + FRAMEBASE — invalid combo,
+	 * doc LOW_DELAY_PIPELINE.md §2).  So gate it on the same low_delay flag that set
+	 * REALTIME above.  Best-effort: a missing symbol leaves the default NORMAL mode. */
+	if (vcfg->video0.low_delay) {
+		i6_venc_src_conf input_mode = I6_VENC_SRC_CONF_RING_ONE;
+		if (MI_VENC_SetInputSourceConfig(*chn, &input_mode) != 0)
+			fprintf(stderr, "[waybeam] WARNING: SetInputSourceConfig(RING_ONE)"
+				" failed — encoder stays in NORMAL input mode\n");
+		else
+			fprintf(stderr, "[waybeam] low-delay: VENC ring-buffer input enabled\n");
+	}
+
+	/* Multi-slice split (low-latency): each slice is independently decodable so the
+	 * RX can begin decoding before the whole frame arrives.  Codec is always H.265
+	 * here (see venc_config.h).  0 = single slice (SDK default), no call.  Applied
+	 * pre-StartRecvPic to match the SetRefParam convention above. */
+	if (vcfg->video0.slice_rows > 0) {
+		MI_VENC_ParamH265SliceSplit_t slice = {
+			.bSplitEnable = 1,
+			.u32SliceRowCount = vcfg->video0.slice_rows,
+		};
+		if (MI_VENC_SetH265SliceSplit(*chn, &slice) != 0)
+			fprintf(stderr, "[waybeam] WARNING: SetH265SliceSplit(%u rows)"
+				" failed — single slice per frame\n",
+				vcfg->video0.slice_rows);
+		else
+			fprintf(stderr, "[waybeam] multi-slice enabled: %u CTU rows/slice\n",
+				vcfg->video0.slice_rows);
+	}
+
 	ret = MI_VENC_StartRecvPic(*chn);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_StartRecvPic failed %d\n", ret);
@@ -1619,7 +1655,7 @@ static int prepare_pipeline_config(Star6ePipelineState *state,
 	pconf->sensor_framerate = vcfg->video0.fps;
 	pconf->venc_max_rate   = vcfg->video0.bitrate;
 
-	if (codec_config_resolve_codec_rc(vcfg->video0.rc_mode,
+	if (codec_config_resolve_codec_rc(vcfg->video0.codec, vcfg->video0.rc_mode,
 	    &pconf->rc_codec, &pconf->rc_mode) != 0)
 		return -1;
 
@@ -1993,8 +2029,14 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 		if (bind_dst_fps == 0 || bind_dst_fps > bind_src_fps)
 			bind_dst_fps = bind_src_fps;
 
+		/* Low-delay pipeline (opt-in, doc LOW_DELAY_PIPELINE.md): bind ch0
+		 * streaming as REALTIME so the encoder can start before the full VPE
+		 * frame is ready (~2-3ms saved).  ch1 recording stays FRAMEBASE (its own
+		 * bind below) to keep the deep SD-stall buffer.  Default = FRAMEBASE. */
+		int link_type = vcfg->video0.low_delay ?
+			I6_SYS_LINK_REALTIME : I6_SYS_LINK_FRAMEBASE;
 		ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
-			bind_src_fps, bind_dst_fps, I6_SYS_LINK_FRAMEBASE, 0);
+			bind_src_fps, bind_dst_fps, link_type, 0);
 		if (ret != 0) {
 			fprintf(stderr, "ERROR: MI_SYS_Bind VPE->VENC failed %d\n", ret);
 			MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
@@ -2002,7 +2044,11 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 			return ret;
 		}
 		state->bound_vpe_venc = 1;
-		MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 3);
+		/* REALTIME has tighter coupling → fewer buffers on the fast path. */
+		if (vcfg->video0.low_delay)
+			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 2);
+		else
+			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 3);
 	}
 
 	/* Bring up the JPEG snapshot subsystem on the same VPE source port the
@@ -2371,7 +2417,8 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencConfig *vcfg,
 	venc_api_set_active_precrop(pconf.precrop.x, pconf.precrop.y,
 		pconf.precrop.w, pconf.precrop.h);
 
-	ret = star6e_pipeline_start_vif(&state->sensor, &pconf.precrop);
+	ret = star6e_pipeline_start_vif(&state->sensor, &pconf.precrop,
+		vcfg->video0.low_delay);
 	if (ret != 0)
 		goto fail_sensor;
 

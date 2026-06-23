@@ -95,7 +95,7 @@ int maruko_config_from_venc(const VencConfig *vcfg, MarukoBackendConfig *cfg)
 		(strcmp(vcfg->outgoing.stream_mode, "compact") == 0) ?
 		MARUKO_STREAM_COMPACT : MARUKO_STREAM_RTP;
 
-	if (codec_config_resolve_codec_rc(vcfg->video0.rc_mode,
+	if (codec_config_resolve_codec_rc(vcfg->video0.codec, vcfg->video0.rc_mode,
 	    &cfg->rc_codec, &cfg->rc_mode) != 0) {
 		return -1;
 	}
@@ -118,6 +118,7 @@ int maruko_config_from_venc(const VencConfig *vcfg, MarukoBackendConfig *cfg)
 	cfg->oc_level = vcfg->system.overclock_level;
 	cfg->scene_threshold = vcfg->video0.scene_threshold;
 	cfg->scene_holdoff = vcfg->video0.scene_holdoff;
+	cfg->slice_rows = vcfg->video0.slice_rows;
 	cfg->frame_lost = vcfg->video0.frame_lost ? 1 : 0;
 	snprintf(cfg->intra_refresh_mode, sizeof(cfg->intra_refresh_mode), "%s",
 		vcfg->video0.intra_refresh_mode);

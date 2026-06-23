@@ -91,9 +91,10 @@ static int maruko_rtp_write(const uint8_t *header, size_t header_len,
 	return 0;
 }
 
-/* H.265-only frame sender: iterates the stream, delegates AP aggregation
- * and FU-A fragmentation to the shared hevc_rtp module. */
-static size_t maruko_send_frame_hevc(const i6c_venc_strm *stream,
+/* Frame sender: iterates the stream, delegates single-NAL + FU-A
+ * fragmentation to the shared codec-aware h26x_rtp module. */
+static size_t maruko_send_frame_hevc(PAYLOAD_TYPE_E codec,
+	const i6c_venc_strm *stream,
 	MarukoRtpWriteContext *ctx, MarukoRtpState *rtp, H26xParamSets *params,
 	size_t max_payload, HevcRtpStats *stats)
 {
@@ -154,12 +155,18 @@ static size_t maruko_send_frame_hevc(const i6c_venc_strm *stream,
 			if (!nal_ptr || nal_len == 0)
 				continue;
 
-			nal_type = h26x_util_hevc_nalu_type(nal_ptr, nal_len);
-			if (pack->packNum > 0)
-				nal_type = (uint8_t)pack->packetInfo[k].packType.h265Nalu;
+			if (codec == PT_H264) {
+				nal_type = h26x_util_h264_nalu_type(nal_ptr, nal_len);
+				if (pack->packNum > 0)
+					nal_type = (uint8_t)pack->packetInfo[k].packType.h264Nalu;
+			} else {
+				nal_type = h26x_util_hevc_nalu_type(nal_ptr, nal_len);
+				if (pack->packNum > 0)
+					nal_type = (uint8_t)pack->packetInfo[k].packType.h265Nalu;
+			}
 
 			if (params)
-				h26x_param_sets_update(params, PT_H265, nal_type,
+				h26x_param_sets_update(params, codec, nal_type,
 					nal_ptr, nal_len);
 
 			last_nal = (i == stream->count - 1) &&
@@ -167,12 +174,12 @@ static size_t maruko_send_frame_hevc(const i6c_venc_strm *stream,
 				 (pack->packNum == 0));
 
 			if (params) {
-				total_bytes += hevc_rtp_prepend_param_sets(params,
+				total_bytes += h26x_rtp_prepend_param_sets(codec, params,
 					nal_type, &state, maruko_rtp_write,
 					ctx, max_payload, stats);
 			}
 
-			total_bytes += hevc_rtp_send_nal(nal_ptr, nal_len,
+			total_bytes += h26x_rtp_send_nal(codec, nal_ptr, nal_len,
 				&state, maruko_rtp_write, ctx, last_nal,
 				max_payload, stats);
 		}
@@ -194,13 +201,10 @@ static size_t maruko_send_frame_rtp(const i6c_venc_strm *stream,
 
 	if (!stream || !output || !rtp)
 		return 0;
-	/* HEVC is the only supported codec since 0.10.12 — defensive
-	 * non-PT_H265 branch removed. */
-	(void)codec;
 
 	/* Open sendmmsg batch for UDP; no-op for SHM. */
 	maruko_output_begin_frame(output);
-	total_bytes = maruko_send_frame_hevc(stream, &ctx, rtp, params,
+	total_bytes = maruko_send_frame_hevc(codec, stream, &ctx, rtp, params,
 		max_payload, stats);
 	(void)maruko_output_end_frame(output);
 	rtp->timestamp += rtp->frame_ticks;

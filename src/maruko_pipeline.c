@@ -1717,6 +1717,20 @@ static int maruko_start_venc(const MarukoBackendConfig *cfg,
 	 * between CreateChn and StartRecvPic for both backends. */
 	(void)maruko_apply_ref_pred(venc_dev, *chn, cfg);
 
+	/* Multi-slice split (parity with star6e) — independently decodable slices
+	 * for lower RX decode latency.  MI_VENC_ParamH265SliceSplit_t layout
+	 * {MI_BOOL bSplitEnable; MI_U32 u32SliceRowCount} = {u32, u32}; declared
+	 * locally since the named SDK struct lives in the star6e header.  0 = single
+	 * slice (no call).  Best-effort: missing symbol → -1, warn, single slice. */
+	if (cfg->slice_rows > 0) {
+		struct { unsigned int split_enable, slice_row_count; } slice = {
+			1, cfg->slice_rows };
+		if (maruko_mi_venc_set_slice_split(venc_dev, *chn, &slice) != 0)
+			fprintf(stderr, "WARNING: [maruko] SetH265SliceSplit(%u rows)"
+				" failed — single slice per frame\n",
+				cfg->slice_rows);
+	}
+
 	ret = maruko_mi_venc_start_recv(venc_dev, *chn);
 	if (ret != 0) {
 		fprintf(stderr,
@@ -2966,8 +2980,10 @@ int maruko_pipeline_configure_graph(MarukoBackendContext *ctx)
 			rate = ctx->audio.sample_rate;
 			ch   = ctx->audio.channels;
 		}
-		star6e_ts_recorder_init(&ctx->ts_recorder, rate, (uint8_t)ch,
-			ts_codec);
+		star6e_ts_recorder_init(&ctx->ts_recorder,
+			ctx->cfg.rc_codec == PT_H264
+				? TS_VIDEO_CODEC_H264 : TS_VIDEO_CODEC_HEVC,
+			rate, (uint8_t)ch, ts_codec);
 	}
 	star6e_recorder_init(&ctx->recorder);
 	if (ctx->cfg.record.max_seconds > 0)

@@ -90,7 +90,7 @@ static void stop_with_reason(Star6eTsRecorderState *state,
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
-void star6e_ts_recorder_init(Star6eTsRecorderState *state,
+void star6e_ts_recorder_init(Star6eTsRecorderState *state, uint8_t video_codec,
 	uint32_t audio_rate, uint8_t audio_channels, uint8_t audio_codec)
 {
 	if (!state)
@@ -100,7 +100,8 @@ void star6e_ts_recorder_init(Star6eTsRecorderState *state,
 	state->sync_interval_frames = RECORDER_SYNC_DEFAULT_FRAMES;
 	state->max_seconds = TS_RECORDER_DEFAULT_MAX_SECONDS;
 	state->max_bytes = TS_RECORDER_DEFAULT_MAX_BYTES;
-	ts_mux_init(&state->mux, audio_rate, audio_channels, audio_codec);
+	ts_mux_init(&state->mux, video_codec, audio_rate, audio_channels,
+		audio_codec);
 }
 
 static int open_new_segment(Star6eTsRecorderState *state)
@@ -368,11 +369,17 @@ int star6e_ts_recorder_write_stream(Star6eTsRecorderState *state,
 				    len > (pack->length - off))
 					continue;
 
-				/* Check for IDR (both IDR_W_RADL=19 and IDR_N_LP=20) */
-				unsigned int nalu = (unsigned int)
-					pack->packetInfo[k].packType.h265Nalu;
-				if (nalu == 19 || nalu == 20)
-					is_idr = 1;
+				/* Check for IDR.  HEVC: IDR_W_RADL=19 / IDR_N_LP=20.
+				 * H.264: IDR slice = nal_type 5. */
+				if (state->mux.video_codec == TS_VIDEO_CODEC_H264) {
+					if (pack->packetInfo[k].packType.h264Nalu == 5)
+						is_idr = 1;
+				} else {
+					unsigned int nalu = (unsigned int)
+						pack->packetInfo[k].packType.h265Nalu;
+					if (nalu == 19 || nalu == 20)
+						is_idr = 1;
+				}
 
 				if (nal_len + len > sizeof(nal_buf)) {
 					fprintf(stderr,

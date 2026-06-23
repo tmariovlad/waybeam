@@ -46,10 +46,12 @@ typedef struct {
 } Star6eTsRecorderState;
 
 /** Zero-initialize TS recorder state.
+ *  video_codec selects the PMT video stream type + IDR NAL semantics
+ *  (TS_VIDEO_CODEC_HEVC / _H264).
  *  audio_codec selects how audio is muxed in TS: TS_AUDIO_CODEC_PCM_S302M
  *  packs raw s16le samples; TS_AUDIO_CODEC_OPUS expects pre-encoded Opus
  *  access units pushed into the audio ring. */
-void star6e_ts_recorder_init(Star6eTsRecorderState *state,
+void star6e_ts_recorder_init(Star6eTsRecorderState *state, uint8_t video_codec,
 	uint32_t audio_rate, uint8_t audio_channels, uint8_t audio_codec);
 
 /** Begin recording to a timestamped .ts file.  Returns 0 on success. */

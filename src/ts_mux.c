@@ -171,12 +171,13 @@ static uint8_t *start_ts_packet(uint8_t *pkt, uint16_t pid,
 	return pkt + 4;
 }
 
-void ts_mux_init(TsMuxState *s, uint32_t audio_rate, uint8_t audio_channels,
-	uint8_t audio_codec)
+void ts_mux_init(TsMuxState *s, uint8_t video_codec, uint32_t audio_rate,
+	uint8_t audio_channels, uint8_t audio_codec)
 {
 	if (!s)
 		return;
 	memset(s, 0, sizeof(*s));
+	s->video_codec = video_codec;
 	s->audio_rate = audio_rate;
 	s->audio_channels = audio_channels;
 	s->audio_codec = audio_codec;
@@ -256,15 +257,25 @@ size_t ts_mux_write_pat_pmt(TsMuxState *s, uint8_t *buf, size_t buf_size)
 	put_be16(p, 0xF000);  /* program_info_length = 0 */
 	p += 2;
 
-	/* Video stream entry with HEVC registration descriptor */
-	*p++ = TS_STREAM_TYPE_HEVC;
-	put_be16(p, (uint16_t)(0xE000 | TS_PID_VIDEO));
-	p += 2;
-	put_be16(p, (uint16_t)(0xF000 | 6));  /* ES_info_length = 6 */
-	p += 2;
-	*p++ = 0x05;  /* descriptor_tag: registration_descriptor */
-	*p++ = 4;     /* descriptor_length */
-	*p++ = 'H'; *p++ = 'E'; *p++ = 'V'; *p++ = 'C';
+	/* Video stream entry.  HEVC carries a 6-byte "HEVC" registration
+	 * descriptor; H.264 uses stream_type 0x1B with no ES descriptors
+	 * (canonical AVC-in-TS, decoded by ffmpeg/VLC/mpv without hints). */
+	if (s->video_codec == TS_VIDEO_CODEC_H264) {
+		*p++ = TS_STREAM_TYPE_H264;
+		put_be16(p, (uint16_t)(0xE000 | TS_PID_VIDEO));
+		p += 2;
+		put_be16(p, 0xF000);  /* ES_info_length = 0 */
+		p += 2;
+	} else {
+		*p++ = TS_STREAM_TYPE_HEVC;
+		put_be16(p, (uint16_t)(0xE000 | TS_PID_VIDEO));
+		p += 2;
+		put_be16(p, (uint16_t)(0xF000 | 6));  /* ES_info_length = 6 */
+		p += 2;
+		*p++ = 0x05;  /* descriptor_tag: registration_descriptor */
+		*p++ = 4;     /* descriptor_length */
+		*p++ = 'H'; *p++ = 'E'; *p++ = 'V'; *p++ = 'C';
+	}
 
 	/* Audio stream entry — descriptors depend on codec:
 	 *
