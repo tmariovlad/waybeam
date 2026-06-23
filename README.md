@@ -623,7 +623,9 @@ codecs** (full parity): intra-refresh (codec-agnostic `SetIntraRefresh`),
 the SVC-T refPred pyramid + non-reference marking (`SetRefParam` + per-codec
 NAL rewrite: HEVC TRAIL_R→TRAIL_N, H.264 `nal_ref_idc`→0), and multi-slice
 split (`sliceRows` → `MI_VENC_SetH264SliceSplit` / `…H265SliceSplit`, picked
-by codec; both share the `{bSplitEnable, rowCount}` cfg).
+by codec; both share the `{bSplitEnable, rowCount}` cfg).  Super-frame cap
+(`superframeKbits`) and all the levers above are detailed in
+[CODEC_H264_SUPPORT.md](documentation/CODEC_H264_SUPPORT.md).
 
 | Field | Type | Mutability | Description |
 |-------|------|------------|-------------|
