@@ -81,6 +81,24 @@ static uint32_t star6e_scene_frame_size(const MI_VENC_Stream_t *s)
 	return t;
 }
 
+/* O77: with slice_send (byFrame=0) GetStream returns per-slice chunks, so a
+ * single returned stream may be a PARTIAL frame (no end-of-frame pack) instead
+ * of a whole frame. Scene-change detection (frame_size / IDR) is only meaningful
+ * on a COMPLETE frame — running it on a partial slice would compute a wrong
+ * frame_size and fire spurious scene-change IDRs. Return 1 only when this stream
+ * carries the frame's last slice (pack.endFrame set), or when slicing is off
+ * (frame-mode, every GetStream IS a full frame). The RTP packetizer is unaffected
+ * (it advances the RTP timestamp from the HW PTS via O33, identical for all
+ * slices of one frame; the frame_ticks fallback is only correct in frame-mode). */
+static int star6e_stream_has_frame_end(const MI_VENC_Stream_t *s)
+{
+	unsigned int i;
+	if (!s || !s->packet || s->count == 0) return 1; /* nothing => treat as boundary */
+	for (i = 0; i < s->count; i++)
+		if (s->packet[i].endFrame) return 1;
+	return 0; /* partial slice run, frame not finished yet */
+}
+
 /* HEVC NAL types relevant for non-reference rewriting */
 #define HEVC_NAL_TRAIL_N 0
 #define HEVC_NAL_TRAIL_R 1
@@ -900,11 +918,18 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 
 	{
 		RtpSidecarEncInfo enc_info;
-		uint32_t frame_size = star6e_scene_frame_size(&stream);
-		uint8_t is_idr = star6e_scene_is_idr(ps->video.codec, &stream);
+		/* O77: only run scene-change detection on a COMPLETE frame. In
+		 * frame-mode (byFrame=1) every stream is a full frame so this is
+		 * always true; in slice_send mode (byFrame=0) it gates out partial
+		 * slice runs whose frame_size/IDR would be wrong. */
+		int frame_complete = star6e_stream_has_frame_end(&stream);
+		if (frame_complete) {
+			uint32_t frame_size = star6e_scene_frame_size(&stream);
+			uint8_t is_idr = star6e_scene_is_idr(ps->video.codec, &stream);
 
-		scene_update(&ctx->scene, frame_size, is_idr,
-			star6e_scene_request_idr, &ps->venc_channel);
+			scene_update(&ctx->scene, frame_size, is_idr,
+				star6e_scene_request_idr, &ps->venc_channel);
+		}
 		scene_fill_sidecar(&ctx->scene, &enc_info);
 
 		/* Observe pressure only when a sidecar probe is subscribed
