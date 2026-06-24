@@ -1,0 +1,5 @@
+# The pretty-printer (venc_config_save) writes LF. The layout round-trip test
+# (tests/test_venc_config.c layout_size_equal) requires config/waybeam.default.json
+# to be byte-identical to that output, so it MUST stay LF even on Windows checkouts.
+config/*.json text eol=lf
+*.json text eol=lf
