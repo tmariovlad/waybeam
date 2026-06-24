@@ -707,10 +707,10 @@ static int test_live_set_rejects_out_of_range_roi_values(void)
 	return failures;
 }
 
-/* H.265-only: video0.codec was retired with the resilience-preset
- * consolidation.  Legacy clients setting `video0.codec=h264` must now
- * receive a clean 404 rather than silent acceptance. */
-static int test_restart_set_rejects_legacy_codec_field(void)
+/* video0.codec is a real settable restart field since the H.264 end-to-end
+ * work.  Setting `video0.codec=h264` must be accepted (HTTP 200) and applied
+ * to the config (not rejected as a legacy/unknown field). */
+static int test_restart_set_accepts_codec_field(void)
 {
 	int failures = 0;
 	VencConfig cfg;
@@ -719,13 +719,12 @@ static int test_restart_set_rejects_legacy_codec_field(void)
 
 	venc_config_defaults(&cfg);
 
-	CHECK("legacy codec rc",
+	CHECK("codec set rc",
 		apply_set_query_http(&cfg, "star6e", NULL,
 			"video0.codec=h264", &status, response,
 			sizeof(response)) == 0);
-	CHECK("legacy codec status", status == 404);
-	CHECK("legacy codec error",
-		strstr(response, "unknown config field") != NULL);
+	CHECK("codec set status", status == 200);
+	CHECK("codec set applied", strcmp(cfg.video0.codec, "h264") == 0);
 
 	return failures;
 }
@@ -1228,7 +1227,7 @@ int test_venc_api(void)
 	failures += test_live_set_isp_bin_dispatches_callback();
 	failures += test_live_set_isp_bin_rejects_unreadable_path();
 	failures += test_live_set_isp_bin_no_callback_returns_501();
-	failures += test_restart_set_rejects_legacy_codec_field();
+	failures += test_restart_set_accepts_codec_field();
 	failures += test_single_set_url_decodes_outgoing_server();
 	failures += test_multi_set_url_decodes_values();
 	failures += test_set_rejects_malformed_percent_escape();

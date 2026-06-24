@@ -23,6 +23,7 @@
     "rotate": 0
   },
   "video0": {
+    "codec": "h265",
     "rcMode": "cbr",
     "fps": 60,
     "size": "auto",
@@ -32,6 +33,9 @@
     "frameLost": true,
     "sceneThreshold": 0,
     "sceneHoldoff": 2,
+    "sliceRows": 0,
+    "superframeKbits": 0,
+    "lowDelay": false,
     "resilience": "off",
     "zoomX": 0.5,
     "zoomY": 0.5,
