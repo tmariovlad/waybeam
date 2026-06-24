@@ -1,6 +1,13 @@
 # Low-Delay VENC Pipeline (Ring Buffer Mode)
 
-**Priority: HIGH** | **Effort: HIGH** | **Status: Not started**
+**Priority: HIGH** | **Effort: HIGH** | **Status: Implemented (opt-in `video0.lowDelay`, SIL-built; on-device latency unverified)**
+
+> Implemented 2026-06-23 as opt-in config `video0.lowDelay` (default off). Steps 1, 2, 3 and 4
+> below are wired for the **ch0 streaming** channel only; ch1 recording stays FRAMEBASE with its
+> deep buffer (dual-VENC risk mitigated). Builds clean star6e+maruko (-Werror). The ~2.8 ms gain
+> is the doc's own measured baseline projection — NOT yet confirmed on this hardware (needs the
+> rtp_sidecar capture→sent probe on a live SSC338Q). SetInputSourceConfig is best-effort: a
+> missing SDK symbol leaves the encoder in FRAMEBASE+NORMAL with a warning, no crash.
 
 ## Goal
 
