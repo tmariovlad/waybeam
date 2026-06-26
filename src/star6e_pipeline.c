@@ -32,6 +32,21 @@
 #include <time.h>
 #include <unistd.h>
 
+/* WAYBEAM_TRACE=1 — bring-up trace (env-gated, zero cost when off; sprint43
+ * "pipeline bound but 0 frames" debug). Mirrors the WBT() macro in
+ * star6e_runtime.c so VENC CreateChn attrs / StartRecvPic / bind args / VIF+VPE
+ * enable returns are all visible in one WAYBEAM_TRACE=1 run. */
+static int g_wbt_pl = -1;
+static inline int wbt_pl_on(void)
+{
+	if (g_wbt_pl < 0) {
+		const char *e = getenv("WAYBEAM_TRACE");
+		g_wbt_pl = (e && *e && *e != '0') ? 1 : 0;
+	}
+	return g_wbt_pl;
+}
+#define WBT(...) do { if (wbt_pl_on()) { fprintf(stderr, "[wbt] " __VA_ARGS__); fflush(stderr); } } while (0)
+
 typedef struct {
 	unsigned int minShutterUs;
 	unsigned int maxShutterUs;
@@ -489,6 +504,7 @@ static int star6e_pipeline_start_vif(const SensorSelectResult *sensor,
 	}
 
 	ret = MI_VIF_EnableChnPort(0, 0);
+	WBT("MI_VIF_EnableChnPort(0,0) ret=%d\n", ret);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VIF_EnableChnPort failed %d\n", ret);
 		MI_VIF_DisableChnPort(0, 0);
@@ -537,6 +553,16 @@ static int star6e_pipeline_start_vpe(const SensorSelectResult *sensor,
 
 	param.hdr = I6_HDR_OFF;
 	param.level3DNR = level_3dnr;
+	/* HIL-debug (sprint43 clean-VPU): divinus (proven-working SSC338Q) hardcodes
+	 * level3DNR=1 (i6_hal.c:321,343); waybeam takes it from config (noiseLevel,
+	 * default 0). On this BSP, 3DNR=0 may leave the VPE channel without the
+	 * internal frame buffers it needs to emit on its output port (live: VPE input
+	 * queue=3 but VPE OUTPUT queue=0, ISP P0 FIFO FULL, VENC starved). Force-test
+	 * with WAYBEAM_3DNR=N (0..3). */
+	{
+		const char *t = getenv("WAYBEAM_3DNR");
+		if (t && *t) param.level3DNR = atoi(t);
+	}
 	param.mirror = 0;
 	param.flip = 0;
 	param.lensAdjOn = 0;
@@ -563,6 +589,7 @@ static int star6e_pipeline_start_vpe(const SensorSelectResult *sensor,
 	}
 
 	ret = MI_VPE_StartChannel(0);
+	WBT("MI_VPE_StartChannel(0) ret=%d\n", ret);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VPE_StartChannel failed %d\n", ret);
 		MI_VPE_DestroyChannel(0);
@@ -583,6 +610,7 @@ static int star6e_pipeline_start_vpe(const SensorSelectResult *sensor,
 	}
 
 	ret = MI_VPE_EnablePort(0, 0);
+	WBT("MI_VPE_EnablePort(0,0) ret=%d (out %ux%u YUV420SP)\n", ret, out_width, out_height);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VPE_EnablePort failed %d\n", ret);
 		MI_VPE_DisablePort(0, 0);
@@ -1192,17 +1220,37 @@ static void star6e_ae_crop_mark_ready(void)
 }
 
 static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
-	uint32_t width, uint32_t height)
+	uint32_t width, uint32_t height, int slice_send)
 {
 	attr->maxWidth = width;
 	attr->maxHeight = height;
-	attr->bufSize = width * height * 3 / 2;
+	/* HIL-debug (sprint43): WAYBEAM_VENC_BUFSIZE env overrides the output
+	 * bitstream buffer sizing. Default keeps w*h*3/2 (upstream). divinus (working
+	 * on SSC338Q) uses w*h — A/B candidate for the "VENC poll never signals" bug.
+	 * "wh"=w*h, "wh32"=w*h*3/2 (default), or a raw byte count. */
+	{
+		const char *bs = getenv("WAYBEAM_VENC_BUFSIZE");
+		if (bs && !strcmp(bs, "wh"))
+			attr->bufSize = width * height;
+		else if (bs && bs[0] >= '1' && bs[0] <= '9')
+			attr->bufSize = (unsigned)strtoul(bs, NULL, 10);
+		else
+			attr->bufSize = width * height * 3 / 2;
+	}
 	attr->profile = 0;
-	attr->byFrame = 1;
+	/* O77: byFrame=1 (default) makes GetStream return only at frame-done.
+	 * byFrame=0 makes the Wave5 VPU raise a slice-done IRQ per slice
+	 * (mi_venc.ko IsrSliceDoneCnt + _MI_VENC_EnableSliceIrq, PROVEN by
+	 * decompile + live /proc/mi_modules/mi_venc) so GetStream wakes per slice
+	 * — only useful when slice_rows>0. Default keeps frame-mode (1). */
+	attr->byFrame = slice_send ? 0 : 1;
 	attr->width = width;
 	attr->height = height;
 	attr->bFrameNum = 0;
 	attr->refNum = 1;
+	WBT("h26x_attr: %ux%u maxW/H=%u/%u bufSize=%u profile=%u byFrame=%d bFrameNum=%d refNum=%d\n",
+		width, height, attr->maxWidth, attr->maxHeight, attr->bufSize,
+		attr->profile, attr->byFrame, attr->bFrameNum, attr->refNum);
 }
 
 static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
@@ -1221,12 +1269,18 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 		bitrate = 200000;
 	bit_rate_bits = bitrate * 1024;
 
+	/* O77: per-slice send only makes sense with multi-slice (slice_rows>0).
+	 * Gate byFrame=0 on BOTH the flag AND slice_rows so enabling slice_send
+	 * without slices is a safe no-op (stays frame-mode). */
+	int slice_send = (vcfg && vcfg->video0.slice_send &&
+	                  vcfg->video0.slice_rows > 0) ? 1 : 0;
+
 	if (codec == PT_H265) {
 		attr.attrib.codec = I6_VENC_CODEC_H265;
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height, slice_send);
 	} else {
 		attr.attrib.codec = I6_VENC_CODEC_H264;
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height, slice_send);
 	}
 
 	switch (codec) {
@@ -1315,6 +1369,8 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	}
 
 	ret = MI_VENC_CreateChn(*chn, &attr);
+	WBT("MI_VENC_CreateChn(chn%d) ret=%d (codec=%d rc=%d %ux%u %ufps %ubps gop=%u)\n",
+		*chn, ret, codec, rc_mode, width, height, framerate, bitrate, gop);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_CreateChn(%d) failed %d\n",
 			*chn, ret);
@@ -1331,12 +1387,21 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	 * doc LOW_DELAY_PIPELINE.md §2).  So gate it on the same low_delay flag that set
 	 * REALTIME above.  Best-effort: a missing symbol leaves the default NORMAL mode. */
 	if (vcfg->video0.low_delay) {
-		i6_venc_src_conf input_mode = I6_VENC_SRC_CONF_RING_ONE;
+		/* sprint43 unlock-ring: input mode env-tunable pt A/B HIL. RING_ONE(1)=handshake
+		 * la 1 frame intreg (ringLineCount=1, link_param=picHeight) — frame-wait ~= FRAMEBASE.
+		 * RING_HALF(2)=handshake la jumatate (ringLineCount=2, link_param=picHeight/2) —
+		 * potential frame-wait ~jumatate. CoherenceCheckRingMode (@0x22cc) cere
+		 * ringLineCount==eInputSrcBufferMode, deci RING_MODE trebuie sa se potriveasca cu
+		 * WAYBEAM_RING_PARAM: RING_ONE+param=720 SAU RING_HALF+param=360 (pt 720p).
+		 * Vezi unlock-ring/R5-coherence-ringmode.md. */
+		const char *rm = getenv("WAYBEAM_RING_MODE");
+		i6_venc_src_conf input_mode = (rm && atoi(rm) == 2)
+			? I6_VENC_SRC_CONF_RING_HALF : I6_VENC_SRC_CONF_RING_ONE;
 		if (MI_VENC_SetInputSourceConfig(*chn, &input_mode) != 0)
-			fprintf(stderr, "[waybeam] WARNING: SetInputSourceConfig(RING_ONE)"
-				" failed — encoder stays in NORMAL input mode\n");
+			fprintf(stderr, "[waybeam] WARNING: SetInputSourceConfig(mode=%d)"
+				" failed — encoder stays in NORMAL input mode\n", (int)input_mode);
 		else
-			fprintf(stderr, "[waybeam] low-delay: VENC ring-buffer input enabled\n");
+			fprintf(stderr, "[waybeam] low-delay: VENC ring-buffer input enabled (mode=%d)\n", (int)input_mode);
 	}
 
 	/* Multi-slice split (low-latency): each slice is independently decodable so the
@@ -1386,6 +1451,7 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	}
 
 	ret = MI_VENC_StartRecvPic(*chn);
+	WBT("MI_VENC_StartRecvPic(chn%d) ret=%d\n", *chn, ret);
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_StartRecvPic failed %d\n", ret);
 		MI_VENC_DestroyChn(*chn);
@@ -2055,20 +2121,79 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 		 * this emits immediately rather than queueing. */
 		g_framing->apply_ae_crop();
 	} else {
-		bind_src_fps = state->sensor.mode.maxFps ?
-			state->sensor.mode.maxFps : pconf->sensor_framerate;
 		bind_dst_fps = vcfg->video0.fps;
-		if (bind_dst_fps == 0 || bind_dst_fps > bind_src_fps)
-			bind_dst_fps = bind_src_fps;
+		if (bind_dst_fps == 0)
+			bind_dst_fps = state->sensor.mode.maxFps ?
+				state->sensor.mode.maxFps : pconf->sensor_framerate;
+		/* HIL-fix (SSC338Q, sprint43 00-FLOW-FIX-PLAN): bind src==dst like
+		 * divinus (i6_hal.c:165).  Declaring bind_src_fps = sensor.maxFps (120)
+		 * while VPE OutputPort actually produces 59.34fps tripped an MI_SYS FRC
+		 * divisor that stalled the VPE->VENC handoff entirely (VENC InputPort
+		 * GetFrame stayed 0 while VPE FinishCnt climbed).  src==dst disables FRC. */
+		bind_src_fps = bind_dst_fps;
 
 		/* Low-delay pipeline (opt-in, doc LOW_DELAY_PIPELINE.md): bind ch0
 		 * streaming as REALTIME so the encoder can start before the full VPE
 		 * frame is ready (~2-3ms saved).  ch1 recording stays FRAMEBASE (its own
-		 * bind below) to keep the deep SD-stall buffer.  Default = FRAMEBASE. */
+		 * bind below) to keep the deep SD-stall buffer.  Default = FRAMEBASE.
+		 * NOTE: REALTIME is unsupported for VPE->VENC on SSC338Q (E_MI_ERR_NOT_SUPPORT)
+		 * — keep low_delay=false on this SoC; see sprint43 waybeam-bind-error-debug. */
 		int link_type = vcfg->video0.low_delay ?
 			I6_SYS_LINK_REALTIME : I6_SYS_LINK_FRAMEBASE;
+		/* HIL-debug (sprint43 clean-VPU): the in-tree maruko backend (SSC30KQ,
+		 * proven-working in this same binary) binds SCL->VENC with RING (0x10)
+		 * not FRAMEBASE (maruko_pipeline.c:2080). On SSC338Q clean VPU, FRAMEBASE
+		 * leaves VENC input unallocated (BufWidth=0, IsrFrmDoneCnt=0) while VPE
+		 * delivers. WAYBEAM_BIND_LINK lets us A/B the link type live without a
+		 * rebuild per guess: framebase|lowlatency|realtime|ring (or raw 0x..). */
+		{
+			const char *bl = getenv("WAYBEAM_BIND_LINK");
+			if (bl && *bl) {
+				if (!strcmp(bl, "ring"))           link_type = I6_SYS_LINK_RING;
+				else if (!strcmp(bl, "lowlatency")) link_type = I6_SYS_LINK_LOWLATENCY;
+				else if (!strcmp(bl, "realtime"))   link_type = I6_SYS_LINK_REALTIME;
+				else if (!strcmp(bl, "framebase"))  link_type = I6_SYS_LINK_FRAMEBASE;
+				else if (bl[0] == '0' && (bl[1] == 'x' || bl[1] == 'X'))
+					link_type = (int)strtol(bl, NULL, 16);
+			}
+		}
+		/* HIL-fix (sprint43 clean-VPU): set the VPE OUTPUT-port buffer depth
+		 * BEFORE binding it to VENC. The in-tree maruko backend sets depth on
+		 * isp_port AND vpe_port AND venc_port (maruko_pipeline.c:2094-2096) with
+		 * the comment "Without this, the pipeline has zero frame buffering ...
+		 * capping FPS well below the sensor's output rate". star6e ONLY set
+		 * venc_port depth (the OUTPUT/bitstream side) and NEVER the vpe_port that
+		 * feeds VENC — so on a FRAMEBASE bind the producer port had 0 buffers and
+		 * VENC's input was never allocated (live: VPE delivers 59.34fps but VENC
+		 * BufWidth=0, IsrFrmDoneCnt=0). Mirror maruko: buffer the VPE output port.
+		 * Disable with WAYBEAM_NO_VPE_DEPTH=1 to A/B. */
+		if (!getenv("WAYBEAM_NO_VPE_DEPTH")) {
+			int vd = MI_SYS_SetChnOutputPortDepth(&state->vpe_port, 1, 3);
+			WBT("SetChnOutputPortDepth(VPE out p0, 1, 3) ret=%d\n", vd);
+		}
+		WBT("bind VPE(mod%d dev%u ch%u p%u)->VENC(mod%d dev%u ch%u p%u) src=%u dst=%u link=%d\n",
+			state->vpe_port.module, state->vpe_port.device, state->vpe_port.channel, state->vpe_port.port,
+			state->venc_port.module, state->venc_port.device, state->venc_port.channel, state->venc_port.port,
+			bind_src_fps, bind_dst_fps, link_type);
+		/* sprint43 unlock-ring: pe SSC338Q (Infinity6e) mi_sys copiaza al 6-lea arg
+		 * (link_param, MI_U32) BRUT in bind-attr.word1 DOAR pe ramura RING(16)
+		 * (mi_sys.ko @0x5434/0x5436). _MI_VENC_OnBindInputPort il citeste la [r7,#16]
+		 * (@0x3178), face guard cmp#0 (@0x317e) -> daca 0 logheaza "ring height is zero"
+		 * L6242 si IESE fara setup ring. Pe calea !=0, ringLineCount = u32PicHeight /
+		 * link_param (@0x3238 uidiv) = nr slice-uri ring pe inaltimea cadrului. waybeam(6e)
+		 * trebuie sa-l paseze !=0 (maruko/6c merge cu 0 fiindca libmi_sys 6c sintetizeaza
+		 * intern bind-struct-ul, NEreproductibil pe 6e). REALTIME(4): mi_sys NU copiaza word1
+		 * (itt eq pe ==16) -> ramane 0, irelevant. Env-tunable pt A/B HIL fara rebuild.
+		 * Vezi repos/tasks/hil-build/sprint43/unlock-ring/02-RING-HEIGHT-FIX-PLAN.md */
+		MI_U32 link_param = 0;
+		if (link_type == I6_SYS_LINK_RING) {
+			const char *rp = getenv("WAYBEAM_RING_PARAM");
+			link_param = (rp && *rp) ? (MI_U32)strtoul(rp, NULL, 0) : 8u;  /* 720/8 = 90 linii/slice */
+		}
+		WBT("BindChnPort2 link_param=%u (RING slice count)\n", link_param);
 		ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
-			bind_src_fps, bind_dst_fps, link_type, 0);
+			bind_src_fps, bind_dst_fps, link_type, link_param);
+		WBT("MI_SYS_BindChnPort2 VPE->VENC ret=%d\n", ret);
 		if (ret != 0) {
 			fprintf(stderr, "ERROR: MI_SYS_Bind VPE->VENC failed %d\n", ret);
 			MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
@@ -2081,6 +2206,37 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 2);
 		else
 			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 3);
+
+		/* sprint43 LOW-LATENCY BYPASS (no kernel patch): enable per-output-port
+		 * low-latency on the VPE output port that feeds VENC. This is the clean
+		 * path to sub-frame draining on SSC338Q where the REALTIME/RING *bind*
+		 * link is rejected by the kernel FilterBindTypeMask (E_MI_ERR_NOT_SUPPORT
+		 * — confirmed live for RING/REALTIME/LOWLATENCY). MI_SYS_EnableChnOutput-
+		 * PortLowLatency operates on the output-port struct only (enable@+0x226,
+		 * depth@+0x228) and never touches the bind-type filter (disasm fw3b).
+		 * So it gives low-latency output draining on the existing FRAMEBASE bind.
+		 * env WAYBEAM_OUTPUT_LOWLATENCY=<depth> (e.g. 1 or 2); unset = off.
+		 * Measure /proc GetStream avg before/after to quantify the gain. */
+		{
+			const char *llv = getenv("WAYBEAM_OUTPUT_LOWLATENCY");
+			if (llv && *llv && g_mi_sys.fnEnableChnOutputPortLowLatency) {
+				uint32_t depth = (uint32_t)strtoul(llv, NULL, 10);
+				if (depth == 0) depth = 1;
+				int llr = g_mi_sys.fnEnableChnOutputPortLowLatency(
+					&state->vpe_port, 1, depth);
+				WBT("EnableChnOutputPortLowLatency(VPE out p0, en=1, depth=%u) ret=%d\n",
+					depth, llr);
+				if (llr != 0)
+					fprintf(stderr, "[waybeam] WARNING: output low-latency "
+						"enable ret=%d (falling back to normal draining)\n", llr);
+				else
+					fprintf(stderr, "[waybeam] output-port low-latency ENABLED "
+						"(depth=%u) on VPE->VENC FRAMEBASE bind\n", depth);
+			} else if (llv && *llv && !g_mi_sys.fnEnableChnOutputPortLowLatency) {
+				fprintf(stderr, "[waybeam] WARNING: WAYBEAM_OUTPUT_LOWLATENCY set "
+					"but MI_SYS_EnableChnOutputPortLowLatency not in libmi_sys.so\n");
+			}
+		}
 	}
 
 	/* Bring up the JPEG snapshot subsystem on the same VPE source port the
