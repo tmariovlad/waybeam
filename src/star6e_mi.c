@@ -66,6 +66,17 @@ static int i6e_sys_load(star6e_sys_impl *sys)
 	LOAD_SYM(sys, "libmi_sys.so", fnSetChnOutputPortDepth,
 		int (*)(const void *, uint32_t, uint32_t),
 		"MI_SYS_SetChnOutputPortDepth");
+	/* sprint43 low-latency bypass — OPTIONAL (not in the required-symbol gate
+	 * below): a missing symbol just disables the WAYBEAM_OUTPUT_LOWLATENCY knob. */
+	LOAD_SYM(sys, "libmi_sys.so", fnEnableChnOutputPortLowLatency,
+		int (*)(const void *, uint32_t, uint32_t),
+		"MI_SYS_EnableChnOutputPortLowLatency");
+	/* OPTIONAL (not in the required-symbol gate): MI system PTS clock, used
+	 * only by the sidecar to convert the encoder HW-PTS epoch into the
+	 * process CLOCK_MONOTONIC epoch for a real capture->ready encode latency.
+	 * A missing symbol just leaves capture_us in its native (offset) epoch. */
+	LOAD_SYM(sys, "libmi_sys.so", fnGetCurPts,
+		int (*)(uint64_t *), "MI_SYS_GetCurPts");
 
 	if (!sys->fnInit || !sys->fnExit || !sys->fnBindChnPort ||
 	    !sys->fnUnBindChnPort || !sys->fnBindChnPort2 ||

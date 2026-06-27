@@ -10,7 +10,11 @@ typedef struct {
 	uint32_t sensor_fps;       /* sensor output fps (for max shutter calc) */
 	uint32_t ae_fps;           /* monitoring rate in Hz (default 15) */
 	uint32_t shutter_max_us;   /* 0 = auto from sensor_fps */
+	uint32_t shutter_us;       /* >0 = FIXED shutter (min==max), 0 = use range */
+	uint32_t shutter_min_us;   /* 0 = use ISP bin default min */
 	uint32_t gain_max;         /* 0 = use ISP bin default */
+	uint32_t gain_min;         /* 0 = use ISP bin default */
+	int      ae_enable;        /* 0 = freeze AE (stop re-writing the limit) */
 	int      verbose;          /* enable periodic status logging */
 } Star6eCus3aConfig;
 
@@ -46,5 +50,13 @@ int star6e_cus3a_running(void);
 /** Update the max sensor gain at runtime.
  *  Called when the user changes isp.gainMax via API. */
 void star6e_cus3a_set_gain_max(uint32_t gain);
+
+/** Runtime exposure-control setters (mirror set_gain_max — the supervisory
+ *  thread reads these volatile fields each tick and re-applies the limit).
+ *  Called when the user changes the matching isp.* key via API. */
+void star6e_cus3a_set_shutter_us(uint32_t shutter_us);     /* 0 = off (range) */
+void star6e_cus3a_set_shutter_min_us(uint32_t shutter_min_us);
+void star6e_cus3a_set_gain_min(uint32_t gain);
+void star6e_cus3a_set_ae_enable(int enable);
 
 #endif /* STAR6E_CUS3A_H */

@@ -156,6 +156,32 @@ int test_pipeline_common(void)
 	rc = pipeline_common_resolve_isp_bin(fixture_a, "imx335", resolved, 0);
 	CHECK("isp_bin zero size rc", rc == 0);
 
+	/* exposure-control: resolve_shutter_window (fix > min/max > frame period) */
+	{
+		uint32_t smin = 0, smax = 0;
+		/* fixed shutter pins min==max==fix, ignoring min/max/fps */
+		pipeline_common_resolve_shutter_window(2000, 0, 8000, 120,
+			&smin, &smax);
+		CHECK("shutter window fix min", smin == 2000);
+		CHECK("shutter window fix max", smax == 2000);
+		/* no fix: max from cfg, min from cfg */
+		pipeline_common_resolve_shutter_window(0, 500, 6000, 120,
+			&smin, &smax);
+		CHECK("shutter window range min", smin == 500);
+		CHECK("shutter window range max", smax == 6000);
+		/* no fix, no cfg max: max falls back to frame period 1e6/fps */
+		pipeline_common_resolve_shutter_window(0, 0, 0, 120, &smin, &smax);
+		CHECK("shutter window auto min", smin == 0);
+		CHECK("shutter window auto max", smax == 8333);
+		/* min clamped to max when min > max */
+		pipeline_common_resolve_shutter_window(0, 9000, 4000, 120,
+			&smin, &smax);
+		CHECK("shutter window clamp min<=max", smin == 4000);
+		/* NULL out pointers must not crash */
+		pipeline_common_resolve_shutter_window(1000, 0, 0, 120, NULL, NULL);
+		CHECK("shutter window null ptrs ok", 1);
+	}
+
 	/* cleanup */
 	unlink(fixture_a);
 	rmdir(tmp_dir);

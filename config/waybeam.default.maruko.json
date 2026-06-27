@@ -13,6 +13,11 @@
     "aeEngine": "sdk",
     "aeFps": 15,
     "gainMax": 0,
+    "shutterMaxUs": 0,
+    "shutterUs": 0,
+    "shutterMinUs": 0,
+    "gainMin": 0,
+    "aeEnable": true,
     "awbMode": "auto",
     "awbCt": 5500,
     "keepAspect": true

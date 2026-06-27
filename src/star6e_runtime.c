@@ -11,6 +11,7 @@
 #include "star6e_controls.h"
 #include "star6e_cus3a.h"
 #include "star6e_iq.h"
+#include "star6e_mi.h"
 #include "star6e_pipeline.h"
 #include "star6e.h"
 #include "venc_api.h"
@@ -69,6 +70,22 @@ static void idle_wait(RtpSidecarSender *sc, int timeout_ms)
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_signal_count = 0;
 static struct timespec g_imu_verbose_last = {0};
+
+/* WAYBEAM_TRACE=1 — global start-flow / egress trace (env-gated, zero cost when off).
+ * Cached once; every WBT() site is a single int test.  Use for the
+ * "pipeline bound but no frames encoded" class of bug (sprint43): it makes the
+ * otherwise SILENT poll-gate + Query + GetStream + send path emit one line per
+ * state transition so a single run shows exactly where flow stops. */
+static int g_wbt = -1;
+static inline int wbt_on(void)
+{
+	if (g_wbt < 0) {
+		const char *e = getenv("WAYBEAM_TRACE");
+		g_wbt = (e && *e && *e != '0') ? 1 : 0;
+	}
+	return g_wbt;
+}
+#define WBT(...) do { if (wbt_on()) { fprintf(stderr, "[wbt] " __VA_ARGS__); fflush(stderr); } } while (0)
 
 /* ── Scene-detector stream decoders ───────────────────────────────────── */
 
@@ -379,6 +396,15 @@ static void start_custom_ae(const Star6ePipelineState *ps,
 		ae_cfg.ae_fps = vcfg->isp.ae_fps;
 	if (vcfg->isp.gain_max > 0)
 		ae_cfg.gain_max = vcfg->isp.gain_max;
+	if (vcfg->isp.shutter_max_us > 0)
+		ae_cfg.shutter_max_us = vcfg->isp.shutter_max_us;
+	/* exposure-control: fixed shutter / floors (0 = off) + AE enable.
+	 * ae_enable is copied unconditionally — its config default is true,
+	 * but config_defaults() memset leaves the cus3a cfg field 0. */
+	ae_cfg.shutter_us = vcfg->isp.shutter_us;
+	ae_cfg.shutter_min_us = vcfg->isp.shutter_min_us;
+	ae_cfg.gain_min = vcfg->isp.gain_min;
+	ae_cfg.ae_enable = vcfg->isp.ae_enable;
 	ae_cfg.verbose = vcfg->system.verbose;
 	star6e_cus3a_start(&ae_cfg);
 }
@@ -462,6 +488,16 @@ static void *dual_rec_thread_fn(void *arg)
 	 * original polling loop. */
 	int venc_fd = MI_VENC_GetFd(d->channel);
 
+	/* sprint43 RING-DEBUG: instrumentează primele N iterații ale buclei de output
+	 * ca să vedem dacă VENC produce (curPacks>0) sub RING-bind sau rămâne mut. */
+	int ring_dbg = getenv("WAYBEAM_RING_DEBUG") != NULL;
+	unsigned int dbg_iter = 0, dbg_query_ok = 0, dbg_pack0 = 0;
+	if (ring_dbg) {
+		fprintf(stderr, "[RING-DBG] output loop start: venc_fd=%d chn=%d\n",
+			venc_fd, d->channel);
+		fflush(stderr);
+	}
+
 	while (d->rec_running) {
 		MI_VENC_Stat_t stat = {0};
 		MI_VENC_Stream_t stream = {0};
@@ -508,6 +544,18 @@ static void *dual_rec_thread_fn(void *arg)
 		}
 
 		ret = MI_VENC_Query(d->channel, &stat);
+		/* RING-DEBUG: log primele 200 iterații (≈2s) — vedem dacă Query
+		 * vede pachete (curPacks) sub RING-bind sau VENC e mut. */
+		if (ring_dbg && dbg_iter < 200) {
+			if (ret == 0) dbg_query_ok++;
+			if (ret == 0 && stat.curPacks == 0) dbg_pack0++;
+			if (dbg_iter < 5 || dbg_iter == 199)
+				fprintf(stderr, "[RING-DBG] iter=%u Query ret=%d curPacks=%u "
+					"(ok=%u pack0=%u)\n", dbg_iter, ret, stat.curPacks,
+					dbg_query_ok, dbg_pack0);
+			if (dbg_iter == 199) fflush(stderr);
+			dbg_iter++;
+		}
 		if (ret != 0 || stat.curPacks == 0) {
 			/* Always sleep before retry: even with venc_fd >= 0,
 			 * a spurious POLLIN that's not matched by an actual
@@ -713,6 +761,8 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 				star6e_video_init(&ps->dual->video, vcfg,
 					ps->sensor.mode.maxFps,
 					&ps->dual->output);
+				ps->dual->video.fn_get_pts =
+					g_mi_sys.fnGetCurPts;
 				printf("> Dual-stream: ch1 → %s\n",
 					ps->dual->server);
 			}
@@ -835,23 +885,33 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 	 * calls; on POLLERR (channel reinit/VPE unbind) we drop to -1 and the next
 	 * call re-acquires it via GetFd. fd<0 → idle_wait fallback below (unchanged). */
 	static int s_venc_fd = -1;
-	if (s_venc_fd < 0)
+	static int s_wbt_pollto = 0, s_wbt_pollin = 0;  /* WBT: rate-limit poll trace */
+	if (s_venc_fd < 0) {
 		s_venc_fd = MI_VENC_GetFd(ps->venc_channel);
+		WBT("GetFd(chn%d)=%d\n", ps->venc_channel, s_venc_fd);
+	}
 	if (s_venc_fd >= 0) {
 		struct pollfd pfd = { .fd = s_venc_fd, .events = POLLIN };
 		(void)poll(&pfd, 1, 1000);  /* large timeout: caps shutdown latency, frames arrive far sooner */
 		if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+			WBT("poll revents=POLLERR/HUP/NVAL(0x%x) -> reacquire fd\n", pfd.revents);
 			MI_VENC_CloseFd(ps->venc_channel);
 			s_venc_fd = -1;  /* re-acquire next call (e.g. after pipeline reinit) */
 		} else if (!(pfd.revents & POLLIN)) {
+			if ((++s_wbt_pollto % 3) == 1)  /* ~once/3s on 1000ms timeout */
+				WBT("poll TIMEOUT (no POLLIN) — VENC fd never signals; pipeline bound but 0 frames\n");
 			/* timeout / spurious wake — still tick 3A so AE/AWB don't stall */
 			star6e_pipeline_cus3a_tick(&g_sdk_quiet, cus3a_ts_last);
 			return 0;
+		} else {
+			if ((++s_wbt_pollin % 60) == 1)
+				WBT("poll POLLIN ok\n");
 		}
 	}
 
 	ret = MI_VENC_Query(ps->venc_channel, &stat);
 	if (ret != 0) {
+		WBT("MI_VENC_Query FAILED ret=%d\n", ret);
 		if ((++(*idle_counter) % 60) == 0) {
 			printf("MI_VENC_Query failed %d\n", ret);
 			fflush(stdout);
@@ -862,7 +922,9 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 	}
 
 	if (stat.curPacks == 0) {
-		if ((++(*idle_counter) % 120) == 0) {
+		if ((++(*idle_counter) % 120) == 1)
+			WBT("Query ok but curPacks=0 — VENC has no encoded stream (poll signaled but no packs)\n");
+		if ((*idle_counter % 120) == 0) {
 			printf("waiting for encoder data...\n");
 			fflush(stdout);
 		}
@@ -870,6 +932,7 @@ static int star6e_runtime_process_stream(Star6eRunnerContext *ctx,
 		idle_wait(&ps->video.sidecar, 1);
 		return 0;
 	}
+	WBT("curPacks=%u -> sending RTP\n", (unsigned)stat.curPacks);
 	*idle_counter = 0;
 
 	stream.count = stat.curPacks;

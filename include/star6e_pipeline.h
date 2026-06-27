@@ -3,6 +3,7 @@
 
 #include "audio_ring.h"
 #include "imu_bmi270.h"
+#include "pipeline_common.h"
 #include "sdk_quiet.h"
 #include "sensor_select.h"
 #include "star6e_audio.h"
@@ -149,9 +150,10 @@ void star6e_pipeline_cus3a_tick(SdkQuietState *sdk_quiet,
 /** Reset CUS3A handoff state (call on pipeline reinit). */
 void star6e_pipeline_cus3a_reset(void);
 
-/** Calculate max exposure time to avoid frame drops at target FPS.
- * cfg_max_shutter_us (0 = auto) = O94 config isp.shutterMaxUs override. */
-int star6e_pipeline_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us);
+/** Apply AE exposure limits (shutter window + gain floor) for target FPS.
+ * params (NULL = max-only legacy) carries the exposure-control config. */
+int star6e_pipeline_cap_exposure_for_fps(uint32_t fps,
+	const PipelineExposureParams *params);
 
 /** Reload the ISP tuning bin against the running pipeline.
  *  configured_path is the new bin location (NULL/empty falls back to

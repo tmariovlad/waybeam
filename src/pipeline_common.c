@@ -135,17 +135,41 @@ uint32_t pipeline_common_resolve_max_shutter_us(uint32_t cfg_max_shutter_us,
 	return 0;
 }
 
-int pipeline_common_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us)
+void pipeline_common_resolve_shutter_window(uint32_t fix_us, uint32_t min_us,
+	uint32_t max_us, uint32_t fps, uint32_t *out_min, uint32_t *out_max)
+{
+	uint32_t lo, hi;
+
+	if (fix_us > 0) {
+		/* Pinned shutter: no AE room on the shutter axis. */
+		lo = hi = fix_us;
+	} else {
+		hi = pipeline_common_resolve_max_shutter_us(max_us, fps);
+		lo = min_us;                 /* 0 = leave ISP bin default */
+		if (lo > 0 && hi > 0 && lo > hi)
+			lo = hi;                 /* keep min ≤ max */
+	}
+	if (out_min)
+		*out_min = lo;
+	if (out_max)
+		*out_max = hi;
+}
+
+int pipeline_common_cap_exposure_for_fps(uint32_t fps,
+	const PipelineExposureParams *params)
 {
 	isp_get_exposure_limit_fn_t fn_get;
 	isp_set_exposure_limit_fn_t fn_set;
 	PipelineIspExposureLimit config;
+	PipelineExposureParams ep = {0};
 	void *handle;
-	uint32_t target_us;
+	uint32_t want_smin = 0, want_smax = 0;
 	int ret;
 
 	if (fps == 0)
 		return 0;
+	if (params)
+		ep = *params;
 
 	handle = dlopen("libmi_isp.so", RTLD_LAZY | RTLD_GLOBAL);
 	if (!handle)
@@ -199,24 +223,28 @@ int pipeline_common_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_
 		}
 	}
 
-	/* O94: optional shutter-cap override. Default = frame period (1000000/fps),
-	 * which only PREVENTS a too-long shutter. Setting the cap BELOW the AE's
-	 * bright-light shutter forces a short exposure (AE hits the cap, gain
-	 * compensates) → lower exposure latency (~half the shutter) + less motion
-	 * blur. Trade-off: darker/noisier under low light (fly on sun).
-	 * Precedence resolved by the shared helper (env > config > 1000000/fps) so
-	 * the cus3a supervisory thread uses the SAME value (HB-45 consistency fix).
-	 * All zero/unset → original behaviour. See O94-shutter-scurt-plan.md. */
-	target_us = pipeline_common_resolve_max_shutter_us(cfg_max_shutter_us, fps);
-	if (config.maxShutterUs <= target_us) {
+	/* Exposure window: O94 max-shutter cap (env > cfg > frame period) PLUS,
+	 * when set, a fixed-shutter pin (min==max) and/or a min-shutter floor +
+	 * gain floor.  Resolved by the shared helper so this one-shot path and the
+	 * cus3a supervisory tick stay consistent (HB-45).  This makes the exposure
+	 * controls work even with the SDK's internal AE (aeEngine="sdk", where the
+	 * cus3a thread does not run).  All zero/unset → legacy max-only behaviour. */
+	pipeline_common_resolve_shutter_window(ep.fix_shutter_us, ep.min_shutter_us,
+		ep.max_shutter_us, fps, &want_smin, &want_smax);
+	if (config.maxShutterUs <= want_smax) {
 		printf("> Exposure cap: maxShutter %uus (already <= %uus for %u fps), enforcing\n",
-			config.maxShutterUs, target_us, fps);
+			config.maxShutterUs, want_smax, fps);
 	} else {
 		printf("> Exposure cap: maxShutter %uus -> %uus (for %u fps)\n",
-			config.maxShutterUs, target_us, fps);
+			config.maxShutterUs, want_smax, fps);
 	}
 
-	config.maxShutterUs = target_us;
+	if (want_smax > 0)
+		config.maxShutterUs = want_smax;
+	if (want_smin > 0)
+		config.minShutterUs = want_smin;   /* fix → min==max pins shutter */
+	if (ep.gain_min > 0)
+		config.minSensorGain = ep.gain_min;
 	ret = ISP_AE_CALL(fn_set, &config);
 	if (ret != 0)
 		fprintf(stderr, "WARNING: MI_ISP_AE_SetExposureLimit failed %d\n", ret);

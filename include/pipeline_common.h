@@ -35,11 +35,38 @@ typedef struct {
 uint32_t pipeline_common_resolve_max_shutter_us(uint32_t cfg_max_shutter_us,
 	uint32_t fps);
 
-/** Cap AE max shutter time for target FPS. fps = 0 is a no-op.
- * cfg_max_shutter_us (0 = use frame period) lowers the cap below the AE's
- * bright-light shutter for shorter exposure latency (O94). Precedence:
- * env WAYBEAM_MAX_SHUTTER_US > cfg_max_shutter_us > 1000000/fps. */
-int pipeline_common_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us);
+/** Resolve the full AE shutter WINDOW (min,max) in microseconds from the
+ * exposure-control config, single source of truth for the one-shot cap and the
+ * cus3a supervisory tick.  Precedence / semantics:
+ *   - fix_us > 0      → pinned shutter: out_min = out_max = fix_us (AE has no
+ *                       room to move the shutter; gain still floats).
+ *   - else            → out_max = resolve_max_shutter_us(max_us, fps)
+ *                       (env > max_us > frame period);
+ *                       out_min = min_us (0 = leave ISP bin default).
+ * out_min is clamped to ≤ out_max when both are non-zero.  Pointers may be NULL.
+ * env WAYBEAM_MAX_SHUTTER_US still overrides the max (via resolve_max_shutter). */
+void pipeline_common_resolve_shutter_window(uint32_t fix_us, uint32_t min_us,
+	uint32_t max_us, uint32_t fps, uint32_t *out_min, uint32_t *out_max);
+
+/** Exposure-control parameters for the one-shot AE limit apply.
+ * All fields 0 = "off / use bin default" (back-compat with the old
+ * max-shutter-only behaviour). Lets the one-shot path honour the same
+ * exposure controls as the cus3a tick, so they work even when the cus3a
+ * supervisory thread is NOT running (aeEngine="sdk", the default). */
+typedef struct {
+	uint32_t max_shutter_us;   /* AE max shutter cap (env override applies) */
+	uint32_t fix_shutter_us;   /* >0 = pin shutter (min==max==fix) */
+	uint32_t min_shutter_us;   /* AE min shutter floor (0 = bin default) */
+	uint32_t gain_min;         /* AE min sensor gain (0 = bin default) */
+} PipelineExposureParams;
+
+/** Cap AE exposure limits for target FPS. fps = 0 is a no-op.
+ * Applies shutter window (fix/min/max via resolve_shutter_window) + gain floor
+ * in one MI_ISP_AE_SetExposureLimit write.  Precedence for max:
+ * env WAYBEAM_MAX_SHUTTER_US > params->max_shutter_us > 1000000/fps.
+ * params may be NULL → max-shutter-only (0) legacy behaviour. */
+int pipeline_common_cap_exposure_for_fps(uint32_t fps,
+	const PipelineExposureParams *params);
 
 /** Compute frame-lost overshoot threshold in bits/s from target bitrate.
  * Formula: bits + max(20%% margin, 512 kbit/s).  Low bitrates need the

@@ -27,6 +27,32 @@ size_t star6e_hevc_rtp_send_frame_codec(PAYLOAD_TYPE_E codec,
 	if (max_payload > RTP_BUFFER_MAX)
 		max_payload = RTP_BUFFER_MAX;
 
+	/* O33 (latency): drive the RTP timestamp from the encoder's HARDWARE PTS
+	 * (i6_venc_pack.timestamp, microseconds) instead of a fixed per-frame tick
+	 * increment. The fixed increment assumes a perfectly regular cadence; when
+	 * VENC delivers frames with real inter-frame jitter (variable encode time,
+	 * dropped/duplicated frames under load), a fixed tick desynchronizes the RTP
+	 * clock from wall time and forces the RX jitter buffer to stay deeper to
+	 * absorb the drift. A wall-clock-anchored timestamp lets the RX run a
+	 * shallower buffer => lower display latency. [INFERRED gain is HIL-only;
+	 * SIL verifies only that the HW PTS propagates correctly at 90 kHz.]
+	 *
+	 * Map us -> 90 kHz RTP ticks, anchored on the first frame's PTS so the wire
+	 * timestamp starts at the random SSRC base (rtp->timestamp) and advances by
+	 * exactly the real elapsed media time. PTS==0 (SDK didn't stamp) -> fall back
+	 * to the fixed frame_ticks path below (zero behavior change). */
+	int used_hw_pts = 0;
+	if (stream->count > 0 && stream->packet[0].timestamp != 0) {
+		unsigned long long pts_us = stream->packet[0].timestamp;
+		if (rtp->pts_anchor_us == 0)
+			rtp->pts_anchor_us = pts_us;     /* first frame: establish anchor */
+		/* 90 kHz ticks since anchor: us * 90 / 1000 == us * 9 / 100 (no overflow
+		 * for any realistic uptime; wraps naturally in uint32 like RTP wants). */
+		unsigned long long delta_us = pts_us - rtp->pts_anchor_us;
+		rtp->timestamp = rtp->ssrc_ts_base + (uint32_t)((delta_us * 9ULL) / 100ULL);
+		used_hw_pts = 1;
+	}
+
 	for (unsigned int i = 0; i < stream->count; ++i) {
 		const MI_VENC_Pack_t *pack = &stream->packet[i];
 		const unsigned int info_cap = (unsigned int)(sizeof(pack->packetInfo) /
@@ -103,7 +129,11 @@ size_t star6e_hevc_rtp_send_frame_codec(PAYLOAD_TYPE_E codec,
 		}
 	}
 
-	rtp->timestamp += frame_ticks;
+	/* O33: only advance by the fixed tick when we did NOT anchor to HW PTS.
+	 * When HW PTS drives the clock, rtp->timestamp is recomputed per frame above,
+	 * so a += here would double-count. */
+	if (!used_hw_pts)
+		rtp->timestamp += frame_ticks;
 	return total_bytes;
 }
 

@@ -72,6 +72,17 @@ typedef struct {
 	                          * exposure latency (~half) + less motion blur;
 	                          * AE compensates with gain (darker/noisier under
 	                          * low light). env WAYBEAM_MAX_SHUTTER_US overrides. */
+	uint32_t shutter_us;     /* exposure-control: FIXED AE shutter in us (0 =
+	                          * off = use min/max range). When >0 the AE shutter
+	                          * is pinned (min==max==shutter_us) → deterministic
+	                          * exposure latency; gain still floats unless capped. */
+	uint32_t shutter_min_us; /* exposure-control: min AE shutter in us (0 = use
+	                          * ISP bin default ~150us). Floor for the AE range. */
+	uint32_t gain_min;       /* exposure-control: min sensor gain (0 = ISP bin
+	                          * default). Pair of gain_max; set min==max to pin. */
+	bool ae_enable;          /* exposure-control: false = freeze AE (cus3a stops
+	                          * re-writing the exposure limit each tick), holding
+	                          * whatever shutter/gain is current. Default true. */
 	char awb_mode[16];     /* "auto" or "ct_manual" */
 	uint32_t awb_ct;       /* color temperature in Kelvin (for ct_manual) */
 	bool keep_aspect;      /* true = center-crop sensor to encode aspect ratio

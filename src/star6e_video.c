@@ -72,6 +72,10 @@ void star6e_video_init(Star6eVideoState *state, const VencConfig *vcfg,
 		state->rtp_state.ssrc = session.ssrc;
 		state->rtp_state.payload_type = session.payload_type;
 		state->rtp_frame_ticks = session.frame_ticks;
+		/* O33: remember the random RTP start so the HW-PTS-driven clock can
+		 * advance from it (RTP requires a random initial timestamp). */
+		state->rtp_state.ssrc_ts_base = session.timestamp;
+		state->rtp_state.pts_anchor_us = 0;   /* set on first HW-PTS frame */
 	}
 
 	if (vcfg->system.verbose) {
@@ -122,15 +126,55 @@ size_t star6e_video_send_frame(Star6eVideoState *state,
 
 		if (sidecar_active) {
 			rtp_sidecar_poll(&state->sidecar);
-			frame_rtp_ts = state->rtp_state.timestamp;
+			/* seq_before MUST be sampled before send (it is the
+			 * frame's starting sequence). frame_rtp_ts is sampled
+			 * AFTER send (below) — when HW PTS drives the clock,
+			 * star6e_output_send_frame() recomputes
+			 * rtp_state.timestamp for THIS frame
+			 * (star6e_hevc_rtp.c:52); sampling here would capture
+			 * the PREVIOUS frame's ts and break the (ssrc,rtp_ts)
+			 * join the sidecar probe uses. */
 			seq_before = state->rtp_state.seq;
 			ready_us = wb_monotonic_us();
 			capture_us = (stream->count > 0 && stream->packet)
 				? stream->packet[0].timestamp : 0;
+			/* The encoder HW PTS (capture_us) and ready_us are both
+			 * monotonic but live in DIFFERENT epochs on SSC338Q: the
+			 * MI system PTS clock is anchored at a different origin
+			 * than the process CLOCK_MONOTONIC, so a raw
+			 * (ready_us - capture_us) is dominated by a constant
+			 * ~100ms clock offset, NOT encode latency (measured live
+			 * 2026-06-27: 114ms, <1ms spread). Convert capture_us
+			 * into the ready_us epoch by sampling both clocks here
+			 * (mono_now == ready_us, pts_now == MI_SYS_GetCurPts) and
+			 * shifting by their offset. The offset is constant (both
+			 * monotonic), so encode_dur = ready_us - capture_us then
+			 * reflects the real capture->NAL on-chip pipeline latency.
+			 * Optional: if MI_SYS_GetCurPts is unavailable, leave
+			 * capture_us untouched (probe shows the offset epoch). */
+			if (capture_us && state->fn_get_pts) {
+				uint64_t pts_now = 0;
+				if (state->fn_get_pts(&pts_now) == 0 &&
+				    pts_now) {
+					/* offset = mono(ready) - pts(now);
+					 * capture in mono = capture_pts + offset. */
+					capture_us = capture_us +
+						(uint64_t)((int64_t)ready_us -
+						           (int64_t)pts_now);
+				}
+			}
 		}
 
 		total_bytes = star6e_output_send_frame(output, stream,
 			state->max_frame_size, send_frame_output_rtp, &rtp_frame);
+
+		if (sidecar_active) {
+			/* sample the RTP timestamp the wire actually carried for
+			 * THIS frame (set inside send_frame, HW-PTS-driven or
+			 * frame_ticks fallback) so the sidecar FRAME message and
+			 * the RTP packets share the same (ssrc,rtp_ts) key. */
+			frame_rtp_ts = state->rtp_state.timestamp;
+		}
 
 		if (sidecar_active) {
 			RtpSidecarTransportInfo tinfo;

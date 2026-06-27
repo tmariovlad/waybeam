@@ -84,7 +84,20 @@ int isp_runtime_load_bin_file(const char *isp_bin_path,
 		return -1;
 
 	printf("> %sLoading ISP file: %s\n", prefix, isp_bin_path);
-	isp_runtime_quiet_begin(hooks);
+	int isp_dbg = getenv("WAYBEAM_RING_DEBUG") != NULL;
+	if (isp_dbg) {
+		fprintf(stderr, "[ISP-DBG] load_bin start: path=%s key=%d "
+			"load_bin_api=%p alt=%p cus3a=%p disable3a=%p wait_ready=%p\n",
+			isp_bin_path, hooks ? hooks->load_key : -1,
+			(void*)lib.load_bin_api, (void*)lib.load_bin_api_alt,
+			(void*)lib.cus3a_enable, (void*)lib.disable_userspace3a,
+			(void*)(hooks ? (void*)hooks->wait_ready : NULL));
+		fflush(stderr);
+	}
+	/* RING-DEBUG: skip SDK quiet (dup2 stderr→/dev/null) ca să vedem ret-urile
+	 * intermediare + erorile SDK din MI_ISP_*CmdLoadBinFile pe stderr. */
+	if (!isp_dbg)
+		isp_runtime_quiet_begin(hooks);
 	if (hooks && hooks->disable_userspace3a && lib.disable_userspace3a) {
 		ret = hooks->disable_userspace3a(&lib, hooks->ctx);
 		if (ret != 0) {
@@ -93,6 +106,7 @@ int isp_runtime_load_bin_file(const char *isp_bin_path,
 				prefix, ret);
 			isp_runtime_quiet_begin(hooks);
 		}
+		if (isp_dbg) { fprintf(stderr, "[ISP-DBG] disable_userspace3a ret=%d\n", ret); fflush(stderr); }
 	}
 
 	if (hooks && hooks->wait_ready) {
@@ -100,6 +114,7 @@ int isp_runtime_load_bin_file(const char *isp_bin_path,
 		if (ret != 0)
 			fprintf(stderr, "WARNING: %sISP readiness wait failed, proceeding anyway\n",
 				prefix);
+		if (isp_dbg) { fprintf(stderr, "[ISP-DBG] wait_ready ret=%d\n", ret); fflush(stderr); }
 	} else {
 		usleep(20 * 1000);
 	}
@@ -107,9 +122,16 @@ int isp_runtime_load_bin_file(const char *isp_bin_path,
 		? hooks->load_bin(&lib, isp_bin_path,
 			hooks->load_key, hooks->ctx)
 		: -1;
+	if (isp_dbg) {
+		fprintf(stderr, "[ISP-DBG] load_bin ret=%d (hooks=%p load_bin=%p)\n",
+			ret, (void*)hooks,
+			(void*)(hooks ? (void*)hooks->load_bin : NULL));
+		fflush(stderr);
+	}
 	if (hooks && hooks->post_load && lib.cus3a_enable)
 		hooks->post_load(&lib, hooks->ctx);
-	isp_runtime_quiet_end(hooks);
+	if (!isp_dbg)
+		isp_runtime_quiet_end(hooks);
 
 	isp_runtime_close(&lib);
 	if (ret != 0) {

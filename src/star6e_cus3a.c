@@ -84,7 +84,11 @@ typedef struct {
 
 	/* constraint limits — written by main thread, read by monitor */
 	volatile uint32_t shutter_max_us;   /* 0 = auto from sensor_fps */
+	volatile uint32_t shutter_us;       /* >0 = FIXED shutter (min==max) */
+	volatile uint32_t shutter_min_us;   /* 0 = ISP bin default min */
 	volatile uint32_t gain_max;         /* 0 = use ISP bin default */
+	volatile uint32_t gain_min;         /* 0 = use ISP bin default */
+	volatile int      ae_enable;        /* 0 = freeze AE limit re-writes */
 
 	/* ISP bin baseline limits (read at startup) */
 	uint32_t bin_max_shutter_us;
@@ -119,18 +123,6 @@ void star6e_cus3a_config_defaults(Star6eCus3aConfig *cfg)
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->sensor_fps = 120;
 	cfg->ae_fps = 15;
-}
-
-static uint32_t compute_max_shutter(const Cus3aState *s)
-{
-	/* Shared resolver: env WAYBEAM_MAX_SHUTTER_US > config shutter_max_us >
-	 * 1000000/sensor_fps.  HB-45 consistency fix: the supervisory thread
-	 * re-writes the AE limit every tick, so it MUST honor the same env cap
-	 * as the one-shot pipeline_common cap — otherwise it clobbered the env
-	 * value back to the frame period (8333us) within one tick. */
-	uint32_t r = pipeline_common_resolve_max_shutter_us(s->shutter_max_us,
-		s->cfg.sensor_fps);
-	return r > 0 ? r : 8333;  /* fallback ~120fps when all unset */
 }
 
 static int resolve_symbols(Cus3aState *s)
@@ -256,15 +248,33 @@ static void *cus3a_thread(void *arg)
 	 * for the physical sensor register.  Force a re-write here so the
 	 * ISP AE re-evaluates with the correct limit on its next cycle. */
 	{
-		uint32_t want_shutter = compute_max_shutter(s);
+		uint32_t want_smin = 0, want_smax = 0;
 		uint32_t want_gain = s->gain_max;  /* 0 = use bin default */
 
-		if (want_shutter > 0 &&
-		    want_shutter <= cur_limit.maxShutterUs)
-			cur_limit.maxShutterUs = want_shutter;
+		pipeline_common_resolve_shutter_window(s->shutter_us,
+			s->shutter_min_us, s->shutter_max_us,
+			s->cfg.sensor_fps, &want_smin, &want_smax);
+
+		/* Fixed shutter (min==max) pins both ends; otherwise keep the
+		 * "don't loosen the bin's tighter ceiling" semantics for max and
+		 * set min only when the user requested a floor. */
+		if (s->shutter_us > 0) {
+			if (want_smax > 0) {
+				cur_limit.maxShutterUs = want_smax;
+				cur_limit.minShutterUs = want_smin;
+			}
+		} else {
+			if (want_smax > 0 &&
+			    want_smax <= cur_limit.maxShutterUs)
+				cur_limit.maxShutterUs = want_smax;
+			if (want_smin > 0)
+				cur_limit.minShutterUs = want_smin;
+		}
 		if (want_gain > 0 &&
 		    want_gain <= cur_limit.maxSensorGain)
 			cur_limit.maxSensorGain = want_gain;
+		if (s->gain_min > 0)
+			cur_limit.minSensorGain = s->gain_min;
 
 		/* Always write — even if the limit value matches, the sensor
 		 * register may not comply after a cold boot ISP bin load. */
@@ -272,8 +282,9 @@ static void *cus3a_thread(void *arg)
 		limit_writes++;
 		if (s->cfg.verbose)
 			printf("[cus3a] initial limits enforced: "
-				"maxShutter=%uus maxGain=%u\n",
+				"maxShutter=%uus minShutter=%uus maxGain=%u\n",
 				cur_limit.maxShutterUs,
+				cur_limit.minShutterUs,
 				cur_limit.maxSensorGain);
 
 		applied_shutter_max = cur_limit.maxShutterUs;
@@ -313,22 +324,37 @@ static void *cus3a_thread(void *arg)
 		memset(&ae_info, 0, sizeof(ae_info));
 		s->fn_get_ae_status(0, &ae_info);
 
-		/* Check if runtime limits changed */
-		{
-			uint32_t want_shutter = compute_max_shutter(s);
+		/* Check if runtime limits changed.
+		 * ae_enable == 0 → freeze: skip all limit re-writes so the AE
+		 * holds whatever shutter/gain is currently latched (the FPS
+		 * kick + independent clamp below still run, being timing-only). */
+		if (s->ae_enable) {
+			/* Full shutter window (fixed / min..max), single source of
+			 * truth shared with the one-shot cap. fix>0 → min==max. */
+			uint32_t want_smin = 0, want_smax = 0;
 			uint32_t want_gain = s->gain_max;
 			uint32_t effective_gain = want_gain > 0 ?
 				want_gain : s->bin_max_sensor_gain;
+			uint32_t want_gmin = s->gain_min;
 			int changed = 0;
+
+			pipeline_common_resolve_shutter_window(s->shutter_us,
+				s->shutter_min_us, s->shutter_max_us,
+				s->cfg.sensor_fps, &want_smin, &want_smax);
 
 			/* Re-read current limits from ISP (they may have
 			 * been changed externally by cap_exposure_for_fps) */
 			s->fn_get_exposure_limit(0, &cur_limit);
 
-			if (want_shutter > 0 &&
-			    want_shutter != applied_shutter_max) {
-				cur_limit.maxShutterUs = want_shutter;
-				applied_shutter_max = want_shutter;
+			if (want_smax > 0 &&
+			    want_smax != applied_shutter_max) {
+				cur_limit.maxShutterUs = want_smax;
+				applied_shutter_max = want_smax;
+				changed = 1;
+			}
+			if (want_smin > 0 &&
+			    want_smin != cur_limit.minShutterUs) {
+				cur_limit.minShutterUs = want_smin;
 				changed = 1;
 			}
 			if (effective_gain > 0 &&
@@ -337,7 +363,44 @@ static void *cus3a_thread(void *arg)
 				applied_gain_max = effective_gain;
 				changed = 1;
 			}
+			if (want_gmin > 0 &&
+			    want_gmin != cur_limit.minSensorGain) {
+				cur_limit.minSensorGain = want_gmin;
+				changed = 1;
+			}
 
+			/* Independent shutter clamp: if the sensor shutter crept
+			 * above our cap during the first second, re-apply the
+			 * exposure limit (does not depend on the kick below). */
+			if (frames > 0 && frames <= 15 &&
+			    s->fn_get_plane_info &&
+			    applied_shutter_max > 0) {
+				MI_SNR_PlaneInfo_t pi;
+				memset(&pi, 0, sizeof(pi));
+				if (s->fn_get_plane_info(0, 0, &pi) == 0 &&
+				    pi.shutter > applied_shutter_max) {
+					cur_limit.maxShutterUs =
+						applied_shutter_max;
+					changed = 1;
+				}
+			}
+
+			if (changed) {
+				s->fn_set_exposure_limit(0, &cur_limit);
+				limit_writes++;
+				if (s->cfg.verbose && frames >= 15)
+					printf("[cus3a] limits updated: "
+						"maxShutter=%uus "
+						"maxGain=%u\n",
+						cur_limit.maxShutterUs,
+						cur_limit.maxSensorGain);
+			}
+		}
+
+		/* fps kick is timing-only (MI_SNR_SetFps) — runs regardless of
+		 * ae_enable so a frozen-AE config still escapes the cold-boot
+		 * 70fps lock. */
+		{
 			/* Cold-boot fps kick (CUS3A path).  On cold boot the ISP
 			 * bin AE can leave the sensor timing register below the
 			 * target fps (observed ~70fps @ target 90).
@@ -365,33 +428,6 @@ static void *cus3a_thread(void *arg)
 				 * kick — device-verified on IMX335, no re-apply
 				 * needed here.  See star6e_runtime.c. */
 				fps_kick_done = 1;
-			}
-
-			/* Independent shutter clamp: if the sensor shutter crept
-			 * above our cap during the first second, re-apply the
-			 * exposure limit (does not depend on the kick above). */
-			if (frames > 0 && frames <= 15 &&
-			    s->fn_get_plane_info &&
-			    applied_shutter_max > 0) {
-				MI_SNR_PlaneInfo_t pi;
-				memset(&pi, 0, sizeof(pi));
-				if (s->fn_get_plane_info(0, 0, &pi) == 0 &&
-				    pi.shutter > applied_shutter_max) {
-					cur_limit.maxShutterUs =
-						applied_shutter_max;
-					changed = 1;
-				}
-			}
-
-			if (changed) {
-				s->fn_set_exposure_limit(0, &cur_limit);
-				limit_writes++;
-				if (s->cfg.verbose && frames >= 15)
-					printf("[cus3a] limits updated: "
-						"maxShutter=%uus "
-						"maxGain=%u\n",
-						cur_limit.maxShutterUs,
-						cur_limit.maxSensorGain);
 			}
 		}
 
@@ -485,7 +521,11 @@ int star6e_cus3a_start(const Star6eCus3aConfig *cfg)
 	memset(&g_cus3a, 0, sizeof(g_cus3a));
 	g_cus3a.cfg = *cfg;
 	g_cus3a.shutter_max_us = cfg->shutter_max_us;
+	g_cus3a.shutter_us = cfg->shutter_us;
+	g_cus3a.shutter_min_us = cfg->shutter_min_us;
 	g_cus3a.gain_max = cfg->gain_max;
+	g_cus3a.gain_min = cfg->gain_min;
+	g_cus3a.ae_enable = cfg->ae_enable;
 
 	if (resolve_symbols(&g_cus3a) != 0) {
 		release_symbols(&g_cus3a);
@@ -559,4 +599,24 @@ int star6e_cus3a_running(void)
 void star6e_cus3a_set_gain_max(uint32_t gain)
 {
 	g_cus3a.gain_max = gain;
+}
+
+void star6e_cus3a_set_shutter_us(uint32_t shutter_us)
+{
+	g_cus3a.shutter_us = shutter_us;
+}
+
+void star6e_cus3a_set_shutter_min_us(uint32_t shutter_min_us)
+{
+	g_cus3a.shutter_min_us = shutter_min_us;
+}
+
+void star6e_cus3a_set_gain_min(uint32_t gain)
+{
+	g_cus3a.gain_min = gain;
+}
+
+void star6e_cus3a_set_ae_enable(int enable)
+{
+	g_cus3a.ae_enable = enable;
 }

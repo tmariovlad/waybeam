@@ -95,6 +95,10 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->isp.legacy_ae = true;
 	safe_strcpy(cfg->isp.ae_mode, sizeof(cfg->isp.ae_mode), "native");
 	cfg->isp.ae_fps = 15;
+	/* exposure-control: shutter_us/shutter_min_us/gain_min default 0 (memset
+	 * above = off / use bin default), like gain_max/shutter_max_us.  ae_enable
+	 * defaults true (AE runs); memset would give false, so set it explicitly. */
+	cfg->isp.ae_enable = true;
 	safe_strcpy(cfg->isp.awb_mode, sizeof(cfg->isp.awb_mode), "auto");
 	cfg->isp.awb_ct = 5500;
 	cfg->isp.keep_aspect = true;
@@ -313,6 +317,10 @@ static void load_isp(const cJSON *root, VencConfigIsp *s)
 	s->ae_fps = (uint32_t)json_get_int(obj, "aeFps", (int)s->ae_fps);
 	s->gain_max = (uint32_t)json_get_int(obj, "gainMax", (int)s->gain_max);
 	s->shutter_max_us = (uint32_t)json_get_int(obj, "shutterMaxUs", (int)s->shutter_max_us);
+	s->shutter_us = (uint32_t)json_get_int(obj, "shutterUs", (int)s->shutter_us);
+	s->shutter_min_us = (uint32_t)json_get_int(obj, "shutterMinUs", (int)s->shutter_min_us);
+	s->gain_min = (uint32_t)json_get_int(obj, "gainMin", (int)s->gain_min);
+	s->ae_enable = json_get_bool(obj, "aeEnable", s->ae_enable);
 	safe_strcpy(s->awb_mode, sizeof(s->awb_mode),
 		json_get_string(obj, "awbMode", s->awb_mode));
 	s->awb_ct = (uint32_t)json_get_int(obj, "awbCt", (int)s->awb_ct);
@@ -1140,6 +1148,10 @@ static void render_isp(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_uint(p,   2, "aeFps",      cfg->isp.ae_fps,      0);
 	pp_field_uint(p,   2, "gainMax",    cfg->isp.gain_max,    0);
 	pp_field_uint(p,   2, "shutterMaxUs", cfg->isp.shutter_max_us, 0);
+	pp_field_uint(p,   2, "shutterUs",    cfg->isp.shutter_us,     0);
+	pp_field_uint(p,   2, "shutterMinUs", cfg->isp.shutter_min_us, 0);
+	pp_field_uint(p,   2, "gainMin",      cfg->isp.gain_min,       0);
+	pp_field_bool(p,   2, "aeEnable",     cfg->isp.ae_enable,      0);
 	pp_field_string(p, 2, "awbMode",    cfg->isp.awb_mode,    0);
 	pp_field_uint(p,   2, "awbCt",      cfg->isp.awb_ct,      0);
 	pp_field_bool(p,   2, "keepAspect", cfg->isp.keep_aspect, 1);
@@ -1336,6 +1348,10 @@ static cJSON *config_to_cjson(const VencConfig *cfg)
 		cJSON_AddNumberToObject(isp, "aeFps", cfg->isp.ae_fps);
 		cJSON_AddNumberToObject(isp, "gainMax", cfg->isp.gain_max);
 		cJSON_AddNumberToObject(isp, "shutterMaxUs", cfg->isp.shutter_max_us);
+		cJSON_AddNumberToObject(isp, "shutterUs", cfg->isp.shutter_us);
+		cJSON_AddNumberToObject(isp, "shutterMinUs", cfg->isp.shutter_min_us);
+		cJSON_AddNumberToObject(isp, "gainMin", cfg->isp.gain_min);
+		cJSON_AddBoolToObject(isp, "aeEnable", cfg->isp.ae_enable);
 		cJSON_AddStringToObject(isp, "awbMode", cfg->isp.awb_mode);
 		cJSON_AddNumberToObject(isp, "awbCt", cfg->isp.awb_ct);
 		cJSON_AddBoolToObject(isp, "keepAspect", cfg->isp.keep_aspect);

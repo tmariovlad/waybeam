@@ -134,10 +134,73 @@ static int test_star6e_hevc_rtp_sends_idr_with_separate_param_sets(void)
 	return failures;
 }
 
+/* O33: when the encoder stamps a real HW PTS on the pack, the RTP timestamp
+ * must be DERIVED from it (90 kHz, anchored on the first frame's PTS + the
+ * random ssrc_ts_base), NOT advanced by the fixed frame_ticks. PTS==0 must keep
+ * the old fixed-tick behavior bit-for-bit. */
+static int test_star6e_hevc_rtp_hwpts_drives_timestamp(void)
+{
+	static const uint8_t idr[] = { 0x26, 0x01, 0xDD, 0xEE };
+	H26xParamSets params = {0};
+	Star6eHevcRtpStats stats = {0};
+	MI_VENC_Pack_t pack = {0};
+	MI_VENC_Stream_t stream = {0};
+	int failures = 0;
+
+	/* ssrc_ts_base = 1000 (random RTP start). frame_ticks would be 3000/frame. */
+	RtpPacketizerState rtp = {
+		.seq = 0x10, .timestamp = 1000, .ssrc = 0xABCD,
+		.payload_type = 97, .ssrc_ts_base = 1000, .pts_anchor_us = 0,
+	};
+
+	pack.data = (uint8_t *)idr;
+	pack.length = sizeof(idr);
+	pack.packNum = 1;
+	pack.packetInfo[0].offset = 0;
+	pack.packetInfo[0].length = sizeof(idr);
+	pack.packetInfo[0].packType.h265Nalu = 19;
+	stream.count = 1;
+	stream.packet = &pack;
+
+	/* Capture-only write: no socket needed; we only assert on rtp.timestamp. */
+	Star6eOutput sink = {0};
+	(void)sink;
+
+	/* --- Frame 1: PTS = 100000 us. Anchor is set here, so timestamp stays at
+	 *     ssrc_ts_base (delta = 0). --- */
+	pack.timestamp = 100000ULL;
+	/* send via the codec entry so frame_ticks=3000 is in play but must be IGNORED */
+	star6e_hevc_rtp_send_frame_codec(PT_H265, &stream, &sink, &rtp, 3000,
+		&params, 1400, &stats);
+	CHECK("O33 anchor set on first HW-PTS frame", rtp.pts_anchor_us == 100000ULL);
+	CHECK("O33 frame1 ts == ssrc_ts_base (delta 0)", rtp.timestamp == 1000);
+
+	/* --- Frame 2: PTS = 100000 + 8333 us (one 120fps frame). 8333us*9/100 =
+	 *     749 ticks. timestamp must be base+749 = 1749, NOT base+3000. --- */
+	pack.timestamp = 100000ULL + 8333ULL;
+	star6e_hevc_rtp_send_frame_codec(PT_H265, &stream, &sink, &rtp, 3000,
+		&params, 1400, &stats);
+	CHECK("O33 frame2 ts from HW PTS (90kHz), not frame_ticks",
+		rtp.timestamp == 1000 + ((8333ULL * 9ULL) / 100ULL));
+	CHECK("O33 anchor unchanged after frame2", rtp.pts_anchor_us == 100000ULL);
+
+	/* --- Frame 3: PTS = 0 (encoder didn't stamp). Must FALL BACK to fixed
+	 *     frame_ticks: previous timestamp + 3000. --- */
+	uint32_t before = rtp.timestamp;
+	pack.timestamp = 0ULL;
+	star6e_hevc_rtp_send_frame_codec(PT_H265, &stream, &sink, &rtp, 3000,
+		&params, 1400, &stats);
+	CHECK("O33 PTS==0 falls back to fixed frame_ticks",
+		rtp.timestamp == before + 3000);
+
+	return failures;
+}
+
 int test_star6e_hevc_rtp(void)
 {
 	int failures = 0;
 
 	failures += test_star6e_hevc_rtp_sends_idr_with_separate_param_sets();
+	failures += test_star6e_hevc_rtp_hwpts_drives_timestamp();
 	return failures;
 }

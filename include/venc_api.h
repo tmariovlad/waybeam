@@ -17,6 +17,10 @@ typedef struct {
 	int (*apply_qp_delta)(int delta);
 	int (*apply_roi_qp)(int qp);
 	int (*apply_gain_max)(uint32_t gain);
+	int (*apply_gain_min)(uint32_t gain);
+	int (*apply_shutter_us)(uint32_t shutter_us);
+	int (*apply_shutter_min_us)(uint32_t shutter_min_us);
+	int (*apply_ae_enable)(bool on);
 	int (*apply_verbose)(bool on);
 	int (*apply_output_enabled)(bool on);
 	int (*apply_server)(const char *uri);

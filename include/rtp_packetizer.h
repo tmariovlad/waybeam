@@ -12,6 +12,13 @@ typedef struct {
 	uint32_t timestamp;
 	uint32_t ssrc;
 	uint8_t payload_type;
+	/* O33 (latency): HW-PTS-driven RTP clock. ssrc_ts_base = the random initial
+	 * timestamp captured at init (RTP wants a random start); pts_anchor_us = the
+	 * first frame's HW PTS (us), so the wire timestamp = ssrc_ts_base + elapsed
+	 * media time at 90 kHz. Both 0 until the first HW-PTS frame => fixed-tick
+	 * fallback stays bit-identical to pre-O33 behavior. */
+	uint32_t ssrc_ts_base;
+	uint64_t pts_anchor_us;
 } RtpPacketizerState;
 
 typedef struct {

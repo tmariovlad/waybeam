@@ -26,6 +26,18 @@ typedef struct {
 		uint32_t link_type, uint32_t link_param);
 	int (*fnSetChnOutputPortDepth)(const void *port,
 		uint32_t user_depth, uint32_t buf_depth);
+	/* sprint43: per-output-port low-latency on a FRAMEBASE bind — bypasses the
+	 * kernel FilterBindTypeMask that rejects REALTIME/RING for VPE->VENC on
+	 * SSC338Q. Disasm (fw3b): MI_SYS_IMPL_EnableChnOutputPortLowLatency(port,
+	 * enable, depth) writes enable@+0x226 + depth@+0x228, no filter call. */
+	int (*fnEnableChnOutputPortLowLatency)(const void *port,
+		uint32_t enable, uint32_t depth);
+	/* MI_SYS_GetCurPts(MI_U64 *pu64Pts): current MI system PTS clock (us).
+	 * Used to measure the constant offset between the encoder HW PTS epoch
+	 * (stream->packet[].timestamp) and the process CLOCK_MONOTONIC epoch
+	 * (wb_monotonic_us), so encode latency (capture->ready) can be reported
+	 * in one clock. Optional symbol — NULL if the lib lacks it. */
+	int (*fnGetCurPts)(uint64_t *pts_us);
 } star6e_sys_impl;
 
 typedef struct {

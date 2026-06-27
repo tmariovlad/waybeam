@@ -421,9 +421,23 @@ void star6e_pipeline_cus3a_tick(SdkQuietState *sdk_quiet,
 	 * is needed here. */
 }
 
-int star6e_pipeline_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us)
+int star6e_pipeline_cap_exposure_for_fps(uint32_t fps,
+	const PipelineExposureParams *params)
 {
-	return pipeline_common_cap_exposure_for_fps(fps, cfg_max_shutter_us);
+	return pipeline_common_cap_exposure_for_fps(fps, params);
+}
+
+/* Single mapping isp config → exposure params, shared by EVERY cap call site
+ * (DRY / single source of truth: the isp.* → PipelineExposureParams field
+ * mapping lives in ONE place; both vcfg and pconf derive from VencConfigIsp). */
+static PipelineExposureParams exposure_params_from_isp(const VencConfigIsp *isp)
+{
+	PipelineExposureParams ep = {0};
+	ep.max_shutter_us = isp->shutter_max_us;
+	ep.fix_shutter_us = isp->shutter_us;
+	ep.min_shutter_us = isp->shutter_min_us;
+	ep.gain_min       = isp->gain_min;
+	return ep;
 }
 
 static void star6e_pipeline_stop_sensor(MI_SNR_PAD_ID_e pad_id)
@@ -1397,11 +1411,25 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 		const char *rm = getenv("WAYBEAM_RING_MODE");
 		i6_venc_src_conf input_mode = (rm && atoi(rm) == 2)
 			? I6_VENC_SRC_CONF_RING_HALF : I6_VENC_SRC_CONF_RING_ONE;
-		if (MI_VENC_SetInputSourceConfig(*chn, &input_mode) != 0)
+		/* sprint43 RING-DEBUG (gated WAYBEAM_RING_DEBUG): instrumentare cu flush
+		 * forțat — stderr la crash poate pierde liniile buffered. ringLineCount
+		 * așteptat = eInputSrcBufferMode (CoherenceCheck): RING_ONE→1, RING_HALF→2.
+		 * Compară cu link_param (BindChnPort2 arg6): ringLineCount_kernel = picH/link_param. */
+		int ring_dbg = getenv("WAYBEAM_RING_DEBUG") != NULL;
+		int sisc_ret = MI_VENC_SetInputSourceConfig(*chn, &input_mode);
+		if (ring_dbg) {
+			fprintf(stderr, "[RING-DBG] SetInputSourceConfig(chn%d, mode=%d) ret=%d "
+				"(RING_ONE=1 wants ringLineCount==1, RING_HALF=2 wants ==2; "
+				"kernel computes picH/link_param)\n",
+				*chn, (int)input_mode, sisc_ret);
+			fflush(stderr);
+		}
+		if (sisc_ret != 0)
 			fprintf(stderr, "[waybeam] WARNING: SetInputSourceConfig(mode=%d)"
 				" failed — encoder stays in NORMAL input mode\n", (int)input_mode);
 		else
 			fprintf(stderr, "[waybeam] low-delay: VENC ring-buffer input enabled (mode=%d)\n", (int)input_mode);
+		fflush(stderr);
 	}
 
 	/* Multi-slice split (low-latency): each slice is independently decodable so the
@@ -1452,6 +1480,23 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 
 	ret = MI_VENC_StartRecvPic(*chn);
 	WBT("MI_VENC_StartRecvPic(chn%d) ret=%d\n", *chn, ret);
+	if (getenv("WAYBEAM_RING_DEBUG")) {
+		fprintf(stderr, "[RING-DBG] StartRecvPic(chn%d) ret=%d\n", *chn, ret);
+		fflush(stderr);
+		/* dump linia RingBuf din /proc imediat — vede dacă ring s-a alocat
+		 * (RingBufHeight≠0 = NIVEL 2 atins) ÎNAINTE ca procesul să poată muri */
+		FILE *pf = fopen("/proc/mi_modules/mi_venc/mi_venc0", "r");
+		if (pf) {
+			char ln[512]; int hdr = 0;
+			while (fgets(ln, sizeof(ln), pf)) {
+				if (strstr(ln, "RingBufStartLine")) { hdr = 1;
+					fprintf(stderr, "[RING-DBG] /proc hdr: %s", ln); continue; }
+				if (hdr) { fprintf(stderr, "[RING-DBG] /proc val: %s", ln); break; }
+			}
+			fclose(pf);
+			fflush(stderr);
+		}
+	}
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_StartRecvPic failed %d\n", ret);
 		MI_VENC_DestroyChn(*chn);
@@ -1730,7 +1775,6 @@ typedef struct {
 	uint32_t           venc_max_rate;
 	uint32_t           venc_gop_size;
 	uint32_t           exposure_cap_us;
-	uint32_t           shutter_max_us;   /* O94: config isp.shutterMaxUs (0=auto) */
 	Star6ePrecropRect  precrop;
 	PAYLOAD_TYPE_E     rc_codec;
 	int                rc_mode;
@@ -1774,7 +1818,6 @@ static int prepare_pipeline_config(Star6ePipelineState *state,
 	 * exposure that locks fps below the target. */
 	pconf->exposure_cap_us = (pconf->sensor_framerate > 0) ?
 		1000000 / pconf->sensor_framerate : 0;
-	pconf->shutter_max_us  = vcfg->isp.shutter_max_us;   /* O94 config cap (0=auto) */
 	pconf->image_mirror    = vcfg->image.mirror ? 1 : 0;
 	pconf->image_flip      = vcfg->image.flip   ? 1 : 0;
 	pconf->vpe_level_3dnr  = vcfg->fpv.noise_level;
@@ -2011,9 +2054,10 @@ int star6e_pipeline_load_isp_bin_live(const char *configured_path,
 	/* Bin can reset MI_ISP_AE_SetExposureLimit to its own defaults; reapply
 	 * the FPS cap so AE doesn't relock to a shutter longer than the frame
 	 * period.  Same logic as bind_and_finalize_pipeline. */
-	if (vcfg->video0.fps > 0)
-		star6e_pipeline_cap_exposure_for_fps(vcfg->video0.fps,
-			vcfg->isp.shutter_max_us);
+	if (vcfg->video0.fps > 0) {
+		PipelineExposureParams ep = exposure_params_from_isp(&vcfg->isp);
+		star6e_pipeline_cap_exposure_for_fps(vcfg->video0.fps, &ep);
+	}
 
 	/* Legacy-AE writes the bin's cold-boot shutter (often ~100 ms) directly
 	 * to the sensor register, which the SetExposureLimit cap above doesn't
@@ -2087,8 +2131,10 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * can converge on a shutter time longer than the frame period during
 	 * the ISP bin load + CUS3A init window, locking the pipeline at a
 	 * lower framerate until reinit. */
-	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate,
-		pconf->shutter_max_us);
+	{
+		PipelineExposureParams ep = exposure_params_from_isp(&vcfg->isp);
+		star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate, &ep);
+	}
 
 	g_framing = star6e_framing_select(vcfg);
 	if (g_framing) {
@@ -2271,6 +2317,11 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 
 	star6e_video_init(&state->video, vcfg, pconf->sensor_framerate,
 		&state->output);
+	/* Inject the device MI-SYS PTS reader so send_frame can align the
+	 * encoder HW-PTS epoch to local monotonic for the encode-latency probe.
+	 * Kept out of star6e_video_init (host-tested) so that file stays free of
+	 * the device-only g_mi_sys global; NULL on host → align step skipped. */
+	state->video.fn_get_pts = g_mi_sys.fnGetCurPts;
 
 	/* Resolve isp.sensorBin: configured path takes precedence; if empty
 	 * or unreadable, fall back to /etc/sensors/<sensor>.bin keyed off
@@ -2305,8 +2356,10 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	}
 	/* Reapply exposure cap after ISP bin load — the bin may reset AE
 	 * limits to its own defaults which could exceed the frame period. */
-	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate,
-		pconf->shutter_max_us);
+	{
+		PipelineExposureParams ep = exposure_params_from_isp(&vcfg->isp);
+		star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate, &ep);
+	}
 
 	/* Cold-boot fix: with legacyAe the ISP bin's AE may initialize the
 	 * sensor at a shutter exceeding the frame period.  SetExposureLimit

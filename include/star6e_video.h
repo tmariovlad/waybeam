@@ -25,6 +25,12 @@ typedef struct {
 	StreamMetricsState verbose_metrics;
 	Star6eHevcRtpStats verbose_packetizer_interval;
 	RtpSidecarSender sidecar;
+	/* Injected MI-SYS PTS clock reader (MI_SYS_GetCurPts), set device-side
+	 * at init.  Lets send_frame align the encoder HW-PTS epoch to the local
+	 * monotonic clock for the encode-latency probe WITHOUT this host-tested
+	 * file depending on the device-only g_mi_sys global.  NULL on host/tests
+	 * → the epoch-align step is skipped (probe reports the offset epoch). */
+	int (*fn_get_pts)(uint64_t *pts_us);
 } Star6eVideoState;
 
 /** Reset video state to uninitialized (safe to reuse). */
