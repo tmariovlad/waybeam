@@ -78,6 +78,11 @@ static int i6e_sys_load(star6e_sys_impl *sys)
 	LOAD_SYM(sys, "libmi_sys.so", fnGetCurPts,
 		int (*)(uint64_t *), "MI_SYS_GetCurPts");
 
+	/* sprint43 unlock-ring: DEVICE_RING private pool for VENC ring-input.
+	 * Optional — RING frame-flow needs it; FRAMEBASE ignores it. */
+	LOAD_SYM(sys, "libmi_sys.so", fnConfigPrivateMMAPool,
+		int (*)(uint16_t, void *), "MI_SYS_ConfigPrivateMMAPool");
+
 	if (!sys->fnInit || !sys->fnExit || !sys->fnBindChnPort ||
 	    !sys->fnUnBindChnPort || !sys->fnBindChnPort2 ||
 	    !sys->fnSetChnOutputPortDepth) {

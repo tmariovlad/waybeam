@@ -38,6 +38,13 @@ typedef struct {
 	 * (wb_monotonic_us), so encode latency (capture->ready) can be reported
 	 * in one clock. Optional symbol — NULL if the lib lacks it. */
 	int (*fnGetCurPts)(uint64_t *pts_us);
+	/* sprint43 unlock-ring (RING frame-flow): MI_SYS_ConfigPrivateMMAPool —
+	 * allocates the private DEVICE_RING pool the VENC ring-input needs. maruko
+	 * (i6c) calls this before CreateChn (maruko_pipeline.c:149); star6e omitted
+	 * it, so RING bind succeeded (ret=0) but VENC poll never signalled (0 frames).
+	 * Symbol present in libmi_sys.so on SSC338Q (verified live). Optional — NULL
+	 * if absent leaves the pool unconfigured (RING stalls, as before). */
+	int (*fnConfigPrivateMMAPool)(uint16_t chip, void *pool);
 } star6e_sys_impl;
 
 typedef struct {

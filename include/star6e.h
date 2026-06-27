@@ -177,6 +177,9 @@ typedef int MI_VENC_DEV;
   g_mi_sys.fnBindChnPort2((src), (dst), (sf), (df), (lt), (lp))
 #define MI_SYS_SetChnOutputPortDepth(p, u, b) \
   g_mi_sys.fnSetChnOutputPortDepth((p), (u), (b))
+#define MI_SYS_ConfigPrivateMMAPool(pool) \
+  (g_mi_sys.fnConfigPrivateMMAPool ? \
+   g_mi_sys.fnConfigPrivateMMAPool(0, (void *)(pool)) : -1)
 #else
 MI_S32 MI_SYS_Init(void);
 MI_S32 MI_SYS_Exit(void);

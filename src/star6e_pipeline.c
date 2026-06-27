@@ -1418,6 +1418,50 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 		break;
 	}
 
+#ifdef WAYBEAM_ENABLE_RING
+	/* sprint43 unlock-ring: the DEVICE_RING private pool VENC ring-input needs.
+	 * maruko (i6c) configures it before CreateChn (maruko_pipeline.c:149); star6e
+	 * omitted it, so RING bind returned ret=0 but VENC poll never signalled
+	 * (0 frames, OnPreProcessInputTask=-1). The i6c_sys_pool/poolring ABI layout
+	 * is what libmi_sys.so expects (shared lib across i6/i6c/m6). Env-gated A/B
+	 * like the other RING knobs; ringLine = height/RING_MODE (matches the
+	 * BindChnPort2 link_param coherence: ringLineCount = picH/link_param). */
+	if (vcfg->video0.low_delay && getenv("WAYBEAM_RING_POOL")) {
+		/* m6 (Infinity6E) ABI: DEVICE_RING does NOT exist (i6c-only). The m6
+		 * ring pool is ENCODER_RING(=0) + {ringSize@8, heapName[32]@12}.
+		 * Passing i6c's DEVICE_RING(=4) crashed libmi_sys (invalid enum).
+		 * Layout matches m6_sys.h:99-108 (type@0, create@4, union@8); defined
+		 * locally to avoid pulling the HAL header. [PROVEN: POOL-ABI-m6-layout.md] */
+		struct {
+			int type;          /* @0  M6_SYS_POOL_ENCODER_RING = 0 */
+			char create;       /* @4 */
+			char _pad[3];
+			unsigned ringSize; /* @8  m6_sys_poolenc.ringSize */
+			char heapName[32]; /* @12 */
+		} pool;
+		memset(&pool, 0, sizeof(pool));
+		pool.type = 0;        /* ENCODER_RING */
+		pool.create = 1;
+		/* ringSize env-tunable: kernel MMA alloc crashes if too big for the heap.
+		 * Default = 2 frames (w*h*1.5*2). WAYBEAM_RING_SIZE overrides (bytes). */
+		{
+			const char *rs = getenv("WAYBEAM_RING_SIZE");
+			pool.ringSize = (rs && *rs) ? (unsigned)strtoul(rs, NULL, 0)
+				: (unsigned)(width * height * 3u / 2u * 2u);
+		}
+		/* ⚠️ HIL-PROVEN 2026-06-27: this ioctl (0x403c6925) HANGS in mi_sys.ko on
+		 * Infinity6E for ENCODER_RING — the userspace fn is correct (disasm: type 0
+		 * is a valid jump-table branch, reads ringSize@8 + heapName@12, always
+		 * returns) but the KERNEL never returns from the alloc ioctl (no dmesg BUG,
+		 * process dies). ENCODER_RING pool = i6c feature, not functional in the
+		 * SSC338Q kernel. Sub-frame RING-input is HW-blocked regardless (HalDma
+		 * line-cnt stub). Gated behind WAYBEAM_RING_POOL so it never runs by default.
+		 * See unlock-ring/POOL-crash-disasm.md + POOL-init-order-final.md. */
+		int pool_ret = MI_SYS_ConfigPrivateMMAPool(&pool);
+		WBT("ConfigPrivateMMAPool(ENCODER_RING ringSize=%u) ret=%d\n",
+			pool.ringSize, pool_ret);
+	}
+#endif
 	ret = MI_VENC_CreateChn(*chn, &attr);
 #ifdef WAYBEAM_ENABLE_RING
 	WBT("MI_VENC_CreateChn(chn%d) ret=%d (codec=%d rc=%d %ux%u %ufps %ubps gop=%u)\n",
