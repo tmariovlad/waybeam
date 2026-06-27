@@ -1,4 +1,4 @@
-SHELL := /bin/bash
+﻿SHELL := /bin/bash
 
 SOC_BUILD ?= star6e
 
@@ -84,6 +84,16 @@ endif
 
 CFLAGS += $(COMMON_CFLAGS) $(SOC_CFLAGS) $(SOC_DEFS)
 LDFLAGS += $(COMMON_LDFLAGS) $(SOC_LDFLAGS)
+
+# RING experimental path (sprint43 unlock-ring): compile in RING/REALTIME bind,
+# WAYBEAM_BIND_LINK/WAYBEAM_RING_MODE/WAYBEAM_RING_DEBUG env knobs, VPE depth,
+# WAYBEAM_OUTPUT_LOWLATENCY, WAYBEAM_VENC_BUFSIZE, and slice_send byFrame toggle.
+# Default (WAYBEAM_RING=0) is the stable 16c0e87 production path.
+# Usage: make build SOC_BUILD=star6e WAYBEAM_RING=1
+WAYBEAM_RING ?= 0
+ifeq ($(WAYBEAM_RING),1)
+CFLAGS += -DWAYBEAM_ENABLE_RING
+endif
 
 .PHONY: help all build lint stage clean toolchain toolchain-maruko ksrc-maruko \
         drivers-maruko maruko-pull maruko-deploy maruko-full json_cli regscan \

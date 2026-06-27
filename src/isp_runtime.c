@@ -88,7 +88,7 @@ int isp_runtime_load_bin_file(const char *isp_bin_path,
 	if (isp_dbg) {
 		fprintf(stderr, "[ISP-DBG] load_bin start: path=%s key=%d "
 			"load_bin_api=%p alt=%p cus3a=%p disable3a=%p wait_ready=%p\n",
-			isp_bin_path, hooks ? hooks->load_key : -1,
+			isp_bin_path, hooks ? (int)hooks->load_key : -1,
 			(void*)lib.load_bin_api, (void*)lib.load_bin_api_alt,
 			(void*)lib.cus3a_enable, (void*)lib.disable_userspace3a,
 			(void*)(hooks ? (void*)hooks->wait_ready : NULL));

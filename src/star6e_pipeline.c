@@ -1,4 +1,4 @@
-#include "star6e_pipeline.h"
+﻿#include "star6e_pipeline.h"
 #include "star6e_framing.h"
 #include "star6e_framing_host.h"
 #if HAVE_FRAMING_STAB
@@ -124,15 +124,30 @@ static void star6e_pipeline_reset(Star6ePipelineState *state)
  * closed. The preset persists in kernel memory until the next init. */
 void star6e_pipeline_vpe_scl_preset_shutdown(void)
 {
-	int fd = open("/sys/devices/virtual/mstar/mscl/clk", O_WRONLY);
+	/* Persist the SAME SCL rate the live run used (WAYBEAM_SCL_CLK, default
+	 * 384 MHz).  On the next start the kernel's "already_inited" path may reuse
+	 * this stored preset instead of re-running DrvSclModuleClkInit, so storing a
+	 * stale 384 here would silently undo a high-FPS override.  Not a signal
+	 * handler — getenv is safe (the emergency variant below stays static). */
+	const char *scl_clk = getenv("WAYBEAM_SCL_CLK");
+	char buf[24];
+	int len;
+	int fd;
 
+	if (!scl_clk || !*scl_clk)
+		scl_clk = "384000000";
+	len = snprintf(buf, sizeof(buf), "%s\n", scl_clk);
+	if (len <= 0 || (size_t)len >= sizeof(buf))
+		return;
+
+	fd = open("/sys/devices/virtual/mstar/mscl/clk", O_WRONLY);
 	if (fd < 0)
 		return;
 
-	(void)write(fd, "384000000\n", 10);
+	(void)write(fd, buf, (size_t)len);
 	close(fd);
 	(void)write(STDERR_FILENO, "[waybeam] VPE SCL preset stored for next run\n",
-		42);
+		45);
 }
 
 /* Called after MI_SYS_Init() to silently tear down any pipeline state left
@@ -1234,10 +1249,15 @@ static void star6e_ae_crop_mark_ready(void)
 }
 
 static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
+#ifdef WAYBEAM_ENABLE_RING
 	uint32_t width, uint32_t height, int slice_send)
+#else
+	uint32_t width, uint32_t height)
+#endif
 {
 	attr->maxWidth = width;
 	attr->maxHeight = height;
+#ifdef WAYBEAM_ENABLE_RING
 	/* HIL-debug (sprint43): WAYBEAM_VENC_BUFSIZE env overrides the output
 	 * bitstream buffer sizing. Default keeps w*h*3/2 (upstream). divinus (working
 	 * on SSC338Q) uses w*h — A/B candidate for the "VENC poll never signals" bug.
@@ -1258,13 +1278,19 @@ static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 	 * decompile + live /proc/mi_modules/mi_venc) so GetStream wakes per slice
 	 * — only useful when slice_rows>0. Default keeps frame-mode (1). */
 	attr->byFrame = slice_send ? 0 : 1;
+	WBT("h26x_attr: %ux%u maxW/H=%u/%u bufSize=%u profile=%u byFrame=%d bFrameNum=%d refNum=%d\n",
+		width, height, attr->maxWidth, attr->maxHeight, attr->bufSize,
+		attr->profile, attr->byFrame, attr->bFrameNum, attr->refNum);
+#else
+	/* Production default: fixed buffer size and frame-mode (16c0e87 baseline). */
+	attr->bufSize = width * height * 3 / 2;
+	attr->profile = 0;
+	attr->byFrame = 1;
+#endif
 	attr->width = width;
 	attr->height = height;
 	attr->bFrameNum = 0;
 	attr->refNum = 1;
-	WBT("h26x_attr: %ux%u maxW/H=%u/%u bufSize=%u profile=%u byFrame=%d bFrameNum=%d refNum=%d\n",
-		width, height, attr->maxWidth, attr->maxHeight, attr->bufSize,
-		attr->profile, attr->byFrame, attr->bFrameNum, attr->refNum);
 }
 
 static int star6e_pipeline_pre_start_apply_ref_pred(MI_VENC_CHN chn,
@@ -1283,18 +1309,28 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 		bitrate = 200000;
 	bit_rate_bits = bitrate * 1024;
 
+#ifdef WAYBEAM_ENABLE_RING
 	/* O77: per-slice send only makes sense with multi-slice (slice_rows>0).
 	 * Gate byFrame=0 on BOTH the flag AND slice_rows so enabling slice_send
 	 * without slices is a safe no-op (stays frame-mode). */
 	int slice_send = (vcfg && vcfg->video0.slice_send &&
 	                  vcfg->video0.slice_rows > 0) ? 1 : 0;
+#endif
 
 	if (codec == PT_H265) {
 		attr.attrib.codec = I6_VENC_CODEC_H265;
+#ifdef WAYBEAM_ENABLE_RING
 		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height, slice_send);
+#else
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height);
+#endif
 	} else {
 		attr.attrib.codec = I6_VENC_CODEC_H264;
+#ifdef WAYBEAM_ENABLE_RING
 		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height, slice_send);
+#else
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height);
+#endif
 	}
 
 	switch (codec) {
@@ -1383,8 +1419,10 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	}
 
 	ret = MI_VENC_CreateChn(*chn, &attr);
+#ifdef WAYBEAM_ENABLE_RING
 	WBT("MI_VENC_CreateChn(chn%d) ret=%d (codec=%d rc=%d %ux%u %ufps %ubps gop=%u)\n",
 		*chn, ret, codec, rc_mode, width, height, framerate, bitrate, gop);
+#endif
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_CreateChn(%d) failed %d\n",
 			*chn, ret);
@@ -1400,6 +1438,7 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	 * pipeline stall seen historically was RING_ONE_FRM + FRAMEBASE — invalid combo,
 	 * doc LOW_DELAY_PIPELINE.md §2).  So gate it on the same low_delay flag that set
 	 * REALTIME above.  Best-effort: a missing symbol leaves the default NORMAL mode. */
+#ifdef WAYBEAM_ENABLE_RING
 	if (vcfg->video0.low_delay) {
 		/* sprint43 unlock-ring: input mode env-tunable pt A/B HIL. RING_ONE(1)=handshake
 		 * la 1 frame intreg (ringLineCount=1, link_param=picHeight) — frame-wait ~= FRAMEBASE.
@@ -1412,9 +1451,9 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 		i6_venc_src_conf input_mode = (rm && atoi(rm) == 2)
 			? I6_VENC_SRC_CONF_RING_HALF : I6_VENC_SRC_CONF_RING_ONE;
 		/* sprint43 RING-DEBUG (gated WAYBEAM_RING_DEBUG): instrumentare cu flush
-		 * forțat — stderr la crash poate pierde liniile buffered. ringLineCount
-		 * așteptat = eInputSrcBufferMode (CoherenceCheck): RING_ONE→1, RING_HALF→2.
-		 * Compară cu link_param (BindChnPort2 arg6): ringLineCount_kernel = picH/link_param. */
+		 * fortat — stderr la crash poate pierde liniile buffered. ringLineCount
+		 * asteptat = eInputSrcBufferMode (CoherenceCheck): RING_ONE->1, RING_HALF->2.
+		 * Compara cu link_param (BindChnPort2 arg6): ringLineCount_kernel = picH/link_param. */
 		int ring_dbg = getenv("WAYBEAM_RING_DEBUG") != NULL;
 		int sisc_ret = MI_VENC_SetInputSourceConfig(*chn, &input_mode);
 		if (ring_dbg) {
@@ -1431,6 +1470,15 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 			fprintf(stderr, "[waybeam] low-delay: VENC ring-buffer input enabled (mode=%d)\n", (int)input_mode);
 		fflush(stderr);
 	}
+#else
+	/* Production default (16c0e87): simple RING_ONE on low_delay, no env knobs. */
+	if (vcfg->video0.low_delay) {
+		i6_venc_src_conf input_mode = I6_VENC_SRC_CONF_RING_ONE;
+		if (MI_VENC_SetInputSourceConfig(*chn, &input_mode) != 0)
+			fprintf(stderr, "[waybeam] WARNING: SetInputSourceConfig(RING_ONE)"
+				" failed — encoder stays in NORMAL input mode\n");
+	}
+#endif
 
 	/* Multi-slice split (low-latency): each slice is independently decodable so the
 	 * RX can begin decoding before the whole frame arrives.  0 = single slice
@@ -1479,12 +1527,12 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	}
 
 	ret = MI_VENC_StartRecvPic(*chn);
+#ifdef WAYBEAM_ENABLE_RING
 	WBT("MI_VENC_StartRecvPic(chn%d) ret=%d\n", *chn, ret);
 	if (getenv("WAYBEAM_RING_DEBUG")) {
 		fprintf(stderr, "[RING-DBG] StartRecvPic(chn%d) ret=%d\n", *chn, ret);
 		fflush(stderr);
-		/* dump linia RingBuf din /proc imediat — vede dacă ring s-a alocat
-		 * (RingBufHeight≠0 = NIVEL 2 atins) ÎNAINTE ca procesul să poată muri */
+		/* dump linia RingBuf din /proc imediat — ring alocat = RingBufHeight != 0 */
 		FILE *pf = fopen("/proc/mi_modules/mi_venc/mi_venc0", "r");
 		if (pf) {
 			char ln[512]; int hdr = 0;
@@ -1497,6 +1545,7 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 			fflush(stderr);
 		}
 	}
+#endif
 	if (ret != 0) {
 		fprintf(stderr, "ERROR: MI_VENC_StartRecvPic failed %d\n", ret);
 		MI_VENC_DestroyChn(*chn);
@@ -1718,18 +1767,34 @@ static void star6e_pipeline_set_hw_clocks(int oc_level, int verbose)
 		{ "/sys/devices/virtual/mstar/isp0/isp_clk", "ISP" },
 		{ "/sys/devices/virtual/mstar/mscl/clk", "SCL" },
 	};
+	/* SCL clock override for high-FPS (>120fps) modes.  At the 384 MHz default
+	 * the VPE scaler caps 1472x816 throughput at ~73fps (live: MainScl DropCnt
+	 * huge, VENC starves at 0.48fps @150fps config) — per-frame ISP/SCL
+	 * processing (~13ms) exceeds the 6.67ms budget at 150fps.  The maruko
+	 * backend runs SCL at 533 MHz (maruko_pipeline.c:1863).  The SSC338Q
+	 * mscl/clk sysfs takes a raw Hz value (verified live: writing 533000000
+	 * reads back 533000000 while stopped; NOT an index like maruko's "1").
+	 * Default stays 384000000 for safety; opt in via WAYBEAM_SCL_CLK=533000000
+	 * (or 432000000/480000000 to find the minimum that sustains the target FPS).
+	 * Must be written before SCL device creation — the kernel locks the rate
+	 * once the SCL channel is up (see star6e_pipeline_vpe_scl_preset_shutdown). */
+	const char *scl_clk = getenv("WAYBEAM_SCL_CLK");
 	unsigned int i;
 
+	if (!scl_clk || !*scl_clk)
+		scl_clk = "384000000";
+
 	for (i = 0; i < sizeof(clocks) / sizeof(clocks[0]); i++) {
+		const char *value = (i == 1) ? scl_clk : "384000000";
 		FILE *handle = fopen(clocks[i].path, "w");
 
 		if (!handle)
 			continue;
 
-		fprintf(handle, "384000000\n");
+		fprintf(handle, "%s\n", value);
 		fclose(handle);
 		if (verbose)
-			printf("> Set %s clock to 384 MHz\n", clocks[i].label);
+			printf("> Set %s clock to %s Hz\n", clocks[i].label, value);
 	}
 
 	if (oc_level >= 1) {
@@ -2171,31 +2236,22 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 		 * this emits immediately rather than queueing. */
 		g_framing->apply_ae_crop();
 	} else {
+		bind_src_fps = state->sensor.mode.maxFps ?
+			state->sensor.mode.maxFps : pconf->sensor_framerate;
 		bind_dst_fps = vcfg->video0.fps;
-		if (bind_dst_fps == 0)
-			bind_dst_fps = state->sensor.mode.maxFps ?
-				state->sensor.mode.maxFps : pconf->sensor_framerate;
-		/* HIL-fix (SSC338Q, sprint43 00-FLOW-FIX-PLAN): bind src==dst like
-		 * divinus (i6_hal.c:165).  Declaring bind_src_fps = sensor.maxFps (120)
-		 * while VPE OutputPort actually produces 59.34fps tripped an MI_SYS FRC
-		 * divisor that stalled the VPE->VENC handoff entirely (VENC InputPort
-		 * GetFrame stayed 0 while VPE FinishCnt climbed).  src==dst disables FRC. */
-		bind_src_fps = bind_dst_fps;
+		if (bind_dst_fps == 0 || bind_dst_fps > bind_src_fps)
+			bind_dst_fps = bind_src_fps;
 
 		/* Low-delay pipeline (opt-in, doc LOW_DELAY_PIPELINE.md): bind ch0
 		 * streaming as REALTIME so the encoder can start before the full VPE
 		 * frame is ready (~2-3ms saved).  ch1 recording stays FRAMEBASE (its own
-		 * bind below) to keep the deep SD-stall buffer.  Default = FRAMEBASE.
-		 * NOTE: REALTIME is unsupported for VPE->VENC on SSC338Q (E_MI_ERR_NOT_SUPPORT)
-		 * — keep low_delay=false on this SoC; see sprint43 waybeam-bind-error-debug. */
+		 * bind below) to keep the deep SD-stall buffer.  Default = FRAMEBASE. */
 		int link_type = vcfg->video0.low_delay ?
 			I6_SYS_LINK_REALTIME : I6_SYS_LINK_FRAMEBASE;
-		/* HIL-debug (sprint43 clean-VPU): the in-tree maruko backend (SSC30KQ,
-		 * proven-working in this same binary) binds SCL->VENC with RING (0x10)
-		 * not FRAMEBASE (maruko_pipeline.c:2080). On SSC338Q clean VPU, FRAMEBASE
-		 * leaves VENC input unallocated (BufWidth=0, IsrFrmDoneCnt=0) while VPE
-		 * delivers. WAYBEAM_BIND_LINK lets us A/B the link type live without a
-		 * rebuild per guess: framebase|lowlatency|realtime|ring (or raw 0x..). */
+#ifdef WAYBEAM_ENABLE_RING
+		/* RING debug: env-tunable link type, VPE port depth, link_param, output low-latency. */
+		/* HIL-debug (sprint43 clean-VPU): WAYBEAM_BIND_LINK overrides link type for A/B.
+		 * framebase|lowlatency|realtime|ring (or raw 0x..). */
 		{
 			const char *bl = getenv("WAYBEAM_BIND_LINK");
 			if (bl && *bl) {
@@ -2207,43 +2263,29 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 					link_type = (int)strtol(bl, NULL, 16);
 			}
 		}
-		/* HIL-fix (sprint43 clean-VPU): set the VPE OUTPUT-port buffer depth
-		 * BEFORE binding it to VENC. The in-tree maruko backend sets depth on
-		 * isp_port AND vpe_port AND venc_port (maruko_pipeline.c:2094-2096) with
-		 * the comment "Without this, the pipeline has zero frame buffering ...
-		 * capping FPS well below the sensor's output rate". star6e ONLY set
-		 * venc_port depth (the OUTPUT/bitstream side) and NEVER the vpe_port that
-		 * feeds VENC — so on a FRAMEBASE bind the producer port had 0 buffers and
-		 * VENC's input was never allocated (live: VPE delivers 59.34fps but VENC
-		 * BufWidth=0, IsrFrmDoneCnt=0). Mirror maruko: buffer the VPE output port.
+		/* HIL-fix: set VPE output-port buffer depth BEFORE bind (mirrors maruko).
 		 * Disable with WAYBEAM_NO_VPE_DEPTH=1 to A/B. */
 		if (!getenv("WAYBEAM_NO_VPE_DEPTH")) {
 			int vd = MI_SYS_SetChnOutputPortDepth(&state->vpe_port, 1, 3);
 			WBT("SetChnOutputPortDepth(VPE out p0, 1, 3) ret=%d\n", vd);
 		}
-		WBT("bind VPE(mod%d dev%u ch%u p%u)->VENC(mod%d dev%u ch%u p%u) src=%u dst=%u link=%d\n",
-			state->vpe_port.module, state->vpe_port.device, state->vpe_port.channel, state->vpe_port.port,
-			state->venc_port.module, state->venc_port.device, state->venc_port.channel, state->venc_port.port,
-			bind_src_fps, bind_dst_fps, link_type);
-		/* sprint43 unlock-ring: pe SSC338Q (Infinity6e) mi_sys copiaza al 6-lea arg
-		 * (link_param, MI_U32) BRUT in bind-attr.word1 DOAR pe ramura RING(16)
-		 * (mi_sys.ko @0x5434/0x5436). _MI_VENC_OnBindInputPort il citeste la [r7,#16]
-		 * (@0x3178), face guard cmp#0 (@0x317e) -> daca 0 logheaza "ring height is zero"
-		 * L6242 si IESE fara setup ring. Pe calea !=0, ringLineCount = u32PicHeight /
-		 * link_param (@0x3238 uidiv) = nr slice-uri ring pe inaltimea cadrului. waybeam(6e)
-		 * trebuie sa-l paseze !=0 (maruko/6c merge cu 0 fiindca libmi_sys 6c sintetizeaza
-		 * intern bind-struct-ul, NEreproductibil pe 6e). REALTIME(4): mi_sys NU copiaza word1
-		 * (itt eq pe ==16) -> ramane 0, irelevant. Env-tunable pt A/B HIL fara rebuild.
-		 * Vezi repos/tasks/hil-build/sprint43/unlock-ring/02-RING-HEIGHT-FIX-PLAN.md */
+		WBT("bind VPE->VENC src=%u dst=%u link=%d\n", bind_src_fps, bind_dst_fps, link_type);
+		/* sprint43 unlock-ring: link_param = pic_height / ring_slice_count.
+		 * RING(16) only — REALTIME(4) ignores word1. */
 		MI_U32 link_param = 0;
 		if (link_type == I6_SYS_LINK_RING) {
 			const char *rp = getenv("WAYBEAM_RING_PARAM");
-			link_param = (rp && *rp) ? (MI_U32)strtoul(rp, NULL, 0) : 8u;  /* 720/8 = 90 linii/slice */
+			link_param = (rp && *rp) ? (MI_U32)strtoul(rp, NULL, 0) : 8u;
 		}
-		WBT("BindChnPort2 link_param=%u (RING slice count)\n", link_param);
+		WBT("BindChnPort2 link_param=%u\n", link_param);
 		ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
 			bind_src_fps, bind_dst_fps, link_type, link_param);
 		WBT("MI_SYS_BindChnPort2 VPE->VENC ret=%d\n", ret);
+#else
+		/* Production default (16c0e87): fixed 6th arg = 0. */
+		ret = MI_SYS_BindChnPort2(&state->vpe_port, &state->venc_port,
+			bind_src_fps, bind_dst_fps, link_type, 0);
+#endif
 		if (ret != 0) {
 			fprintf(stderr, "ERROR: MI_SYS_Bind VPE->VENC failed %d\n", ret);
 			MI_SYS_UnBindChnPort(&state->vif_port, &state->vpe_port);
@@ -2251,22 +2293,14 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 			return ret;
 		}
 		state->bound_vpe_venc = 1;
-		/* REALTIME has tighter coupling → fewer buffers on the fast path. */
+		/* REALTIME has tighter coupling -> fewer buffers on the fast path. */
 		if (vcfg->video0.low_delay)
 			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 2);
 		else
 			MI_SYS_SetChnOutputPortDepth(&state->venc_port, 1, 3);
-
-		/* sprint43 LOW-LATENCY BYPASS (no kernel patch): enable per-output-port
-		 * low-latency on the VPE output port that feeds VENC. This is the clean
-		 * path to sub-frame draining on SSC338Q where the REALTIME/RING *bind*
-		 * link is rejected by the kernel FilterBindTypeMask (E_MI_ERR_NOT_SUPPORT
-		 * — confirmed live for RING/REALTIME/LOWLATENCY). MI_SYS_EnableChnOutput-
-		 * PortLowLatency operates on the output-port struct only (enable@+0x226,
-		 * depth@+0x228) and never touches the bind-type filter (disasm fw3b).
-		 * So it gives low-latency output draining on the existing FRAMEBASE bind.
-		 * env WAYBEAM_OUTPUT_LOWLATENCY=<depth> (e.g. 1 or 2); unset = off.
-		 * Measure /proc GetStream avg before/after to quantify the gain. */
+#ifdef WAYBEAM_ENABLE_RING
+		/* sprint43 LOW-LATENCY BYPASS: EnableChnOutputPortLowLatency on VPE output.
+		 * env WAYBEAM_OUTPUT_LOWLATENCY=<depth>; unset = off. */
 		{
 			const char *llv = getenv("WAYBEAM_OUTPUT_LOWLATENCY");
 			if (llv && *llv && g_mi_sys.fnEnableChnOutputPortLowLatency) {
@@ -2287,6 +2321,7 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 					"but MI_SYS_EnableChnOutputPortLowLatency not in libmi_sys.so\n");
 			}
 		}
+#endif
 	}
 
 	/* Bring up the JPEG snapshot subsystem on the same VPE source port the

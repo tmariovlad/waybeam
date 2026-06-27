@@ -257,17 +257,24 @@ typedef struct {
 
 static void install_signal_handlers(void);
 
+/* SCL clock preset value, snapshotted from WAYBEAM_SCL_CLK at signal-handler
+ * install (getenv is unsafe in a signal handler).  Persists the high-FPS
+ * override (default 384 MHz) so the emergency path does not silently drop the
+ * rate.  Includes the trailing newline; g_scl_preset_len excludes the NUL. */
+static char g_scl_preset[24] = "384000000\n";
+static size_t g_scl_preset_len = sizeof("384000000\n") - 1;
+
 /* Write VPE SCL clock preset before forced exit.  Uses only
- * async-signal-safe syscalls (open/write/close). */
+ * async-signal-safe syscalls (open/write/close) and the pre-snapshotted
+ * g_scl_preset buffer (no getenv in signal context). */
 static void scl_preset_emergency(void)
 {
 	static const char path[] = "/sys/devices/virtual/mstar/mscl/clk";
-	static const char val[] = "384000000\n";
 	static const char msg[] = "[waybeam] Emergency SCL preset written\n";
 	int fd = open(path, O_WRONLY);
 
 	if (fd >= 0) {
-		(void)write(fd, val, sizeof(val) - 1);
+		(void)write(fd, g_scl_preset, g_scl_preset_len);
 		close(fd);
 		(void)write(STDERR_FILENO, msg, sizeof(msg) - 1);
 	}
@@ -317,6 +324,17 @@ static void handle_signal(int sig)
 static void install_signal_handlers(void)
 {
 	struct sigaction sa;
+
+	/* Snapshot the SCL clock override now, while getenv is safe, so the
+	 * SIGALRM emergency preset can persist the live rate without calling
+	 * getenv from signal context. */
+	const char *scl_clk = getenv("WAYBEAM_SCL_CLK");
+	if (scl_clk && *scl_clk) {
+		int len = snprintf(g_scl_preset, sizeof(g_scl_preset), "%s\n",
+			scl_clk);
+		if (len > 0 && (size_t)len < sizeof(g_scl_preset))
+			g_scl_preset_len = (size_t)len;
+	}
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = handle_signal;
