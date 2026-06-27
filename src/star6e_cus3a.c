@@ -1,5 +1,6 @@
 #include "star6e_cus3a.h"
 #include "star6e.h"
+#include "pipeline_common.h"
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -122,11 +123,14 @@ void star6e_cus3a_config_defaults(Star6eCus3aConfig *cfg)
 
 static uint32_t compute_max_shutter(const Cus3aState *s)
 {
-	if (s->shutter_max_us > 0)
-		return s->shutter_max_us;
-	if (s->cfg.sensor_fps > 0)
-		return 1000000 / s->cfg.sensor_fps;
-	return 8333;  /* fallback ~120fps */
+	/* Shared resolver: env WAYBEAM_MAX_SHUTTER_US > config shutter_max_us >
+	 * 1000000/sensor_fps.  HB-45 consistency fix: the supervisory thread
+	 * re-writes the AE limit every tick, so it MUST honor the same env cap
+	 * as the one-shot pipeline_common cap — otherwise it clobbered the env
+	 * value back to the frame period (8333us) within one tick. */
+	uint32_t r = pipeline_common_resolve_max_shutter_us(s->shutter_max_us,
+		s->cfg.sensor_fps);
+	return r > 0 ? r : 8333;  /* fallback ~120fps when all unset */
 }
 
 static int resolve_symbols(Cus3aState *s)

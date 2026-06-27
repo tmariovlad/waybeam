@@ -26,9 +26,20 @@ typedef struct {
 	uint16_t x, y, w, h;
 } PipelinePrecropRect;
 
-/** Cap AE max shutter time to frame period for target FPS.
- * fps = 0 is a no-op. */
-int pipeline_common_cap_exposure_for_fps(uint32_t fps);
+/** Resolve the effective AE max-shutter cap (microseconds) with the canonical
+ * precedence: env WAYBEAM_MAX_SHUTTER_US > cfg_max_shutter_us > 1000000/fps.
+ * Returns 0 only when all three are 0 (no fps, no cfg, no env) — callers treat
+ * 0 as "auto / leave the bin default".  Single source of truth so the one-shot
+ * pipeline cap AND the cus3a supervisory thread agree (HB-45: the env used to
+ * be honored only at init, then cus3a clobbered it back to the frame period). */
+uint32_t pipeline_common_resolve_max_shutter_us(uint32_t cfg_max_shutter_us,
+	uint32_t fps);
+
+/** Cap AE max shutter time for target FPS. fps = 0 is a no-op.
+ * cfg_max_shutter_us (0 = use frame period) lowers the cap below the AE's
+ * bright-light shutter for shorter exposure latency (O94). Precedence:
+ * env WAYBEAM_MAX_SHUTTER_US > cfg_max_shutter_us > 1000000/fps. */
+int pipeline_common_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us);
 
 /** Compute frame-lost overshoot threshold in bits/s from target bitrate.
  * Formula: bits + max(20%% margin, 512 kbit/s).  Low bitrates need the

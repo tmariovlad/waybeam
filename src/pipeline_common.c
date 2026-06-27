@@ -120,7 +120,22 @@ typedef int (*isp_set_exposure_limit_fn_t)(int channel,
 #define ISP_AE_CALL(fn, cfg) fn(0, cfg)
 #endif
 
-int pipeline_common_cap_exposure_for_fps(uint32_t fps)
+uint32_t pipeline_common_resolve_max_shutter_us(uint32_t cfg_max_shutter_us,
+	uint32_t fps)
+{
+	const char *e = getenv("WAYBEAM_MAX_SHUTTER_US");
+	uint32_t env_ov = e ? (uint32_t)strtoul(e, NULL, 10) : 0;
+
+	if (env_ov > 0)
+		return env_ov;
+	if (cfg_max_shutter_us > 0)
+		return cfg_max_shutter_us;
+	if (fps > 0)
+		return 1000000 / fps;
+	return 0;
+}
+
+int pipeline_common_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us)
 {
 	isp_get_exposure_limit_fn_t fn_get;
 	isp_set_exposure_limit_fn_t fn_set;
@@ -184,7 +199,15 @@ int pipeline_common_cap_exposure_for_fps(uint32_t fps)
 		}
 	}
 
-	target_us = 1000000 / fps;
+	/* O94: optional shutter-cap override. Default = frame period (1000000/fps),
+	 * which only PREVENTS a too-long shutter. Setting the cap BELOW the AE's
+	 * bright-light shutter forces a short exposure (AE hits the cap, gain
+	 * compensates) → lower exposure latency (~half the shutter) + less motion
+	 * blur. Trade-off: darker/noisier under low light (fly on sun).
+	 * Precedence resolved by the shared helper (env > config > 1000000/fps) so
+	 * the cus3a supervisory thread uses the SAME value (HB-45 consistency fix).
+	 * All zero/unset → original behaviour. See O94-shutter-scurt-plan.md. */
+	target_us = pipeline_common_resolve_max_shutter_us(cfg_max_shutter_us, fps);
 	if (config.maxShutterUs <= target_us) {
 		printf("> Exposure cap: maxShutter %uus (already <= %uus for %u fps), enforcing\n",
 			config.maxShutterUs, target_us, fps);
@@ -210,19 +233,29 @@ PipelinePrecropRect pipeline_common_compute_precrop(uint32_t sensor_w,
 	uint64_t sensor_ar;
 	uint64_t image_ar;
 
-	if (!keep_aspect)
+	/* HIL-debug (sprint43 clean-VPU): WAYBEAM_NO_PRECROP=1 forces the full
+	 * sensor rect (no keep-aspect crop), matching majestic which captures the
+	 * full 16-aligned 1472 width. The unaligned aspect-crop width (1450, not a
+	 * multiple of 16) was PROVEN live to force the SSC338Q ISP into a 2-pass
+	 * readout (VIF IsrCnt:EnqCnt 2:1, MainScl drops half → 59fps, ISP P0 FIFO
+	 * FULL flood, VENC starved). See flow2-vif-isp-fifo.md. */
+	if (!keep_aspect || getenv("WAYBEAM_NO_PRECROP"))
 		return rect;
 
 	sensor_ar = (uint64_t)sensor_w * image_h;
 	image_ar = (uint64_t)image_w * sensor_h;
 
+	/* 16-px width alignment: the i6 ISP/VIF datapath requires 16-aligned
+	 * capture width (I6_IPU_*WALIGN=16). A merely 2-aligned width (& ~1u)
+	 * such as 1450 triggers the 2-pass-per-frame readout above. Align width
+	 * down to 16 and x-offset to 16 too. (Height/y keep 2-align.) */
 	if (sensor_ar > image_ar) {
 		rect.h = (uint16_t)sensor_h;
-		rect.w = (uint16_t)((sensor_h * image_w / image_h) & ~1u);
-		rect.x = (uint16_t)(((sensor_w - rect.w) / 2) & ~1u);
+		rect.w = (uint16_t)((sensor_h * image_w / image_h) & ~15u);
+		rect.x = (uint16_t)(((sensor_w - rect.w) / 2) & ~15u);
 		rect.y = 0;
 	} else if (sensor_ar < image_ar) {
-		rect.w = (uint16_t)sensor_w;
+		rect.w = (uint16_t)(sensor_w & ~15u);
 		rect.h = (uint16_t)((sensor_w * image_h / image_w) & ~1u);
 		rect.x = 0;
 		rect.y = (uint16_t)(((sensor_h - rect.h) / 2) & ~1u);

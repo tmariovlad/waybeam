@@ -166,6 +166,7 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->video0.slice_rows = 0;        /* 0 = single slice (default) */
 	cfg->video0.superframe_kbits = 0;  /* 0 = super-frame cap off (default) */
 	cfg->video0.low_delay = false;     /* off = FRAMEBASE (current behaviour) */
+	cfg->video0.slice_send = false;    /* O77: off = byFrame=1 frame-mode (current) */
 
 	/* intra refresh (video0) — disabled by default; mode-driven */
 	safe_strcpy(cfg->video0.intra_refresh_mode,
@@ -311,6 +312,7 @@ static void load_isp(const cJSON *root, VencConfigIsp *s)
 	}
 	s->ae_fps = (uint32_t)json_get_int(obj, "aeFps", (int)s->ae_fps);
 	s->gain_max = (uint32_t)json_get_int(obj, "gainMax", (int)s->gain_max);
+	s->shutter_max_us = (uint32_t)json_get_int(obj, "shutterMaxUs", (int)s->shutter_max_us);
 	safe_strcpy(s->awb_mode, sizeof(s->awb_mode),
 		json_get_string(obj, "awbMode", s->awb_mode));
 	s->awb_ct = (uint32_t)json_get_int(obj, "awbCt", (int)s->awb_ct);
@@ -547,6 +549,7 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 	v->superframe_kbits = (uint32_t)json_get_int(obj, "superframeKbits",
 		(int)v->superframe_kbits);
 	v->low_delay = json_get_bool(obj, "lowDelay", v->low_delay);
+	v->slice_send = json_get_bool(obj, "sliceSend", v->slice_send);
 
 	/* Resilience preset is the sole driver of intra-refresh + SVC-T
 	 * (refPred).  For named presets it also overrides gop_size; only
@@ -1136,6 +1139,7 @@ static void render_isp(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_string(p, 2, "aeEngine",   cfg->isp.ae_engine,   0);
 	pp_field_uint(p,   2, "aeFps",      cfg->isp.ae_fps,      0);
 	pp_field_uint(p,   2, "gainMax",    cfg->isp.gain_max,    0);
+	pp_field_uint(p,   2, "shutterMaxUs", cfg->isp.shutter_max_us, 0);
 	pp_field_string(p, 2, "awbMode",    cfg->isp.awb_mode,    0);
 	pp_field_uint(p,   2, "awbCt",      cfg->isp.awb_ct,      0);
 	pp_field_bool(p,   2, "keepAspect", cfg->isp.keep_aspect, 1);
@@ -1174,6 +1178,7 @@ static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_uint(p,   2, "sliceRows",      cfg->video0.slice_rows,      0);
 	pp_field_uint(p,   2, "superframeKbits", cfg->video0.superframe_kbits, 0);
 	pp_field_bool(p,   2, "lowDelay",       cfg->video0.low_delay,       0);
+	pp_field_bool(p,   2, "sliceSend",      cfg->video0.slice_send,      0);
 	pp_field_string(p, 2, "resilience",        cfg->video0.resilience,          0);
 	pp_field_double(p, 2, "zoomX",             cfg->video0.zoom_x,              0);
 	pp_field_double(p, 2, "zoomY",             cfg->video0.zoom_y,              0);
@@ -1330,6 +1335,7 @@ static cJSON *config_to_cjson(const VencConfig *cfg)
 		cJSON_AddStringToObject(isp, "aeEngine", cfg->isp.ae_engine);
 		cJSON_AddNumberToObject(isp, "aeFps", cfg->isp.ae_fps);
 		cJSON_AddNumberToObject(isp, "gainMax", cfg->isp.gain_max);
+		cJSON_AddNumberToObject(isp, "shutterMaxUs", cfg->isp.shutter_max_us);
 		cJSON_AddStringToObject(isp, "awbMode", cfg->isp.awb_mode);
 		cJSON_AddNumberToObject(isp, "awbCt", cfg->isp.awb_ct);
 		cJSON_AddBoolToObject(isp, "keepAspect", cfg->isp.keep_aspect);

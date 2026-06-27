@@ -421,9 +421,9 @@ void star6e_pipeline_cus3a_tick(SdkQuietState *sdk_quiet,
 	 * is needed here. */
 }
 
-int star6e_pipeline_cap_exposure_for_fps(uint32_t fps)
+int star6e_pipeline_cap_exposure_for_fps(uint32_t fps, uint32_t cfg_max_shutter_us)
 {
-	return pipeline_common_cap_exposure_for_fps(fps);
+	return pipeline_common_cap_exposure_for_fps(fps, cfg_max_shutter_us);
 }
 
 static void star6e_pipeline_stop_sensor(MI_SNR_PAD_ID_e pad_id)
@@ -1730,6 +1730,7 @@ typedef struct {
 	uint32_t           venc_max_rate;
 	uint32_t           venc_gop_size;
 	uint32_t           exposure_cap_us;
+	uint32_t           shutter_max_us;   /* O94: config isp.shutterMaxUs (0=auto) */
 	Star6ePrecropRect  precrop;
 	PAYLOAD_TYPE_E     rc_codec;
 	int                rc_mode;
@@ -1773,6 +1774,7 @@ static int prepare_pipeline_config(Star6ePipelineState *state,
 	 * exposure that locks fps below the target. */
 	pconf->exposure_cap_us = (pconf->sensor_framerate > 0) ?
 		1000000 / pconf->sensor_framerate : 0;
+	pconf->shutter_max_us  = vcfg->isp.shutter_max_us;   /* O94 config cap (0=auto) */
 	pconf->image_mirror    = vcfg->image.mirror ? 1 : 0;
 	pconf->image_flip      = vcfg->image.flip   ? 1 : 0;
 	pconf->vpe_level_3dnr  = vcfg->fpv.noise_level;
@@ -2010,7 +2012,8 @@ int star6e_pipeline_load_isp_bin_live(const char *configured_path,
 	 * the FPS cap so AE doesn't relock to a shutter longer than the frame
 	 * period.  Same logic as bind_and_finalize_pipeline. */
 	if (vcfg->video0.fps > 0)
-		star6e_pipeline_cap_exposure_for_fps(vcfg->video0.fps);
+		star6e_pipeline_cap_exposure_for_fps(vcfg->video0.fps,
+			vcfg->isp.shutter_max_us);
 
 	/* Legacy-AE writes the bin's cold-boot shutter (often ~100 ms) directly
 	 * to the sensor register, which the SetExposureLimit cap above doesn't
@@ -2084,7 +2087,8 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	 * can converge on a shutter time longer than the frame period during
 	 * the ISP bin load + CUS3A init window, locking the pipeline at a
 	 * lower framerate until reinit. */
-	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate);
+	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate,
+		pconf->shutter_max_us);
 
 	g_framing = star6e_framing_select(vcfg);
 	if (g_framing) {
@@ -2301,7 +2305,8 @@ static int bind_and_finalize_pipeline(Star6ePipelineState *state,
 	}
 	/* Reapply exposure cap after ISP bin load — the bin may reset AE
 	 * limits to its own defaults which could exceed the frame period. */
-	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate);
+	star6e_pipeline_cap_exposure_for_fps(pconf->sensor_framerate,
+		pconf->shutter_max_us);
 
 	/* Cold-boot fix: with legacyAe the ISP bin's AE may initialize the
 	 * sensor at a shutter exceeding the frame period.  SetExposureLimit

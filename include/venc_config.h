@@ -66,6 +66,12 @@ typedef struct {
 	char ae_mode[16];      /* derived from ae_engine (Maruko call sites) */
 	uint32_t ae_fps;       /* custom AE rate in Hz (default 15) */
 	uint32_t gain_max;     /* max sensor gain (0 = use ISP bin default) */
+	uint32_t shutter_max_us; /* O94: max AE shutter in us (0 = frame period
+	                          * 1000000/fps). Set below the bright-light AE
+	                          * shutter to force a short exposure → lower
+	                          * exposure latency (~half) + less motion blur;
+	                          * AE compensates with gain (darker/noisier under
+	                          * low light). env WAYBEAM_MAX_SHUTTER_US overrides. */
 	char awb_mode[16];     /* "auto" or "ct_manual" */
 	uint32_t awb_ct;       /* color temperature in Kelvin (for ct_manual) */
 	bool keep_aspect;      /* true = center-crop sensor to encode aspect ratio
@@ -108,6 +114,13 @@ typedef struct {
 	                            * so the encoder starts before the full frame is ready (~2-3ms
 	                            * saved, doc LOW_DELAY_PIPELINE.md). ch0 stream only — ch1 record
 	                            * stays FRAMEBASE (deep buffer for SD stall tolerance). Default off. */
+	bool slice_send;           /* O77: per-slice immediate send. Sets the VENC attr byFrame=0 so the
+	                            * encoder raises a slice-done IRQ (Wave5 INT_WAVE5_ENC_LOW_LATENCY) and
+	                            * GetStream wakes per slice — slice 1 can be sent while slice 2 encodes.
+	                            * Requires slice_rows>0 (no slices = no benefit). HW/driver support
+	                            * PROVEN (mi_venc.ko IsrSliceDoneCnt + _MI_VENC_EnableSliceIrq); the net
+	                            * gain (sub-ms..~2ms, atop low_delay) needs HIL. Default off (byFrame=1,
+	                            * frame-mode = current behavior). See research/O77-decompile/. */
 	/* Derived from `resilience` preset only.  Not part of the JSON
 	 * schema or HTTP API — written exclusively by
 	 * apply_resilience_preset() at load time.  Do not parse from JSON,
