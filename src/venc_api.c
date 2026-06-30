@@ -818,12 +818,21 @@ static const char *validate_field_cfg(const VencConfig *cfg, const char *key)
 		uint32_t h = cfg->video0.height;
 		/* w==0 && h==0 means "auto" (use sensor native) — allowed. */
 		if (w != 0 || h != 0) {
-			if (w < 128 || h < 128 || w > 4096 || h > 4096)
-				return "video0.size width/height must be 128-4096";
+			/* min lowered 128->16 to allow RES_9 64x64 isolation mode
+			 * (pipeline-floor latency test). 16 = I6 WALIGN; HEVC CTU
+			 * alignment (w%16, h%8) still enforced below. */
+			if (w < 16 || h < 16 || w > 4096 || h > 4096)
+				return "video0.size width/height must be 16-4096";
 			/* HEVC CTU alignment: width must be multiple of 16,
 			 * height multiple of 8.  MI_VENC_CreateChn rejects
 			 * misaligned widths with MI_ERR_VENC_ILLEGAL_PARAM
-			 * (-1610473469) and the daemon cannot recover. */
+			 * (-1610473469 = 0xA0022003) and the daemon cannot
+			 * recover.  NOTE: alignment is necessary but NOT
+			 * sufficient — the Wave5 encoder also enforces a hard
+			 * minimum picture size (>128; ~256 for HEVC), so an
+			 * aligned-but-tiny size (e.g. 128x128) still fails
+			 * CreateChn.  See repos/tasks/hil-build/g2g-verify/
+			 * VENC-min-size-SSC338Q.md. */
 			if (w % 16 != 0)
 				return "video0.size width must be a multiple of 16";
 			if (h % 8 != 0)
