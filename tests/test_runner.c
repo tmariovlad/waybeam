@@ -11,6 +11,7 @@ extern int test_venc_api(void);
 extern int test_venc_httpd(void);
 extern int test_sensor_select(void);
 extern int test_venc_ring(void);
+extern int test_slice_ring(void);
 extern int test_file_util(void);
 extern int test_h26x_util(void);
 extern int test_h26x_param_sets(void);
@@ -57,6 +58,9 @@ int main(void)
 
 	printf("\n--- test_venc_ring ---\n");
 	failures += test_venc_ring();
+
+	printf("\n--- test_slice_ring ---\n");
+	failures += test_slice_ring();
 
 	printf("\n--- test_file_util ---\n");
 	failures += test_file_util();
