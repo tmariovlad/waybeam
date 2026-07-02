@@ -112,7 +112,18 @@ size_t star6e_hevc_rtp_send_frame_codec(PAYLOAD_TYPE_E codec,
 			if (params)
 				h26x_param_sets_update(params, codec, nal_type, nal_ptr, nal_len);
 
-			last_nal = (i == stream->count - 1) &&
+			/* O77 fix: the marker bit must fire on the pack the SDK flags
+			 * as the frame's end (pack->endFrame), not merely the last pack
+			 * in this GetStream batch. In frame-mode the two coincide (one
+			 * GetStream == one full frame, endFrame set on the final pack);
+			 * in slice-mode (byFrame=0) a batch can be a partial frame, so
+			 * "last pack in batch" != "last pack of frame" and the old
+			 * check would mark every partial batch's tail NAL, truncating
+			 * the AU downstream (h26x_util_strip_start_code-adjacent
+			 * receivers close on marker=1). See star6e_stream_has_frame_end
+			 * (this file's sibling helper in star6e_runtime.c) for the same
+			 * endFrame-based boundary test. */
+			last_nal = pack->endFrame &&
 				((pack->packNum > 0 && k == nal_count - 1) ||
 				 (pack->packNum == 0));
 
