@@ -124,7 +124,16 @@ typedef struct {
 	bool low_delay;            /* low-delay pipeline: VPE→VENC ch0 REALTIME + ring-buffer input,
 	                            * so the encoder starts before the full frame is ready (~2-3ms
 	                            * saved, doc LOW_DELAY_PIPELINE.md). ch0 stream only — ch1 record
-	                            * stays FRAMEBASE (deep buffer for SD stall tolerance). Default off. */
+	                            * stays FRAMEBASE (deep buffer for SD stall tolerance). Default off.
+	                            * WARNING: on Infinity6E/SSC338Q the REALTIME bind is HW-blocked
+	                            * (ADR-032) → VENC collapses to fps 0.  Use isp_low_delay instead. */
+	bool isp_low_delay;        /* O104: ISP-SIDE low-delay ONLY — emit VIF output every quarter-frame
+	                            * so ISP/VPE start before the full frame is captured, but KEEP the
+	                            * VPE→VENC bind on FRAMEBASE (does NOT touch the HW-blocked REALTIME
+	                            * path).  This is the layer majestic's `.isp.lowDelay` uses: measured
+	                            * −1.0ms G2G with NO collapse (majestic /proc identical true/false at
+	                            * the bind, only ISP tightened).  Safe on SSC338Q.  Default off.
+	                            * See HANDOVER-majestic-vs-waybeam-lowdelay.md PARTEA 4. */
 	bool slice_send;           /* O77: per-slice immediate send. Sets the VENC attr byFrame=0 so the
 	                            * encoder raises a slice-done IRQ (Wave5 INT_WAVE5_ENC_LOW_LATENCY) and
 	                            * GetStream wakes per slice — slice 1 can be sent while slice 2 encodes.

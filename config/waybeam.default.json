@@ -41,6 +41,7 @@
     "sliceRows": 0,
     "superframeKbits": 0,
     "lowDelay": false,
+    "ispLowDelay": false,
     "sliceSend": false,
     "resilience": "off",
     "zoomX": 0.5,

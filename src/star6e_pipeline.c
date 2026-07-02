@@ -471,7 +471,7 @@ static Star6ePrecropRect star6e_pipeline_compute_precrop(uint32_t sensor_w,
 }
 
 static int star6e_pipeline_start_vif(const SensorSelectResult *sensor,
-	const Star6ePrecropRect *precrop, bool low_delay)
+	const Star6ePrecropRect *precrop, bool vif_subframe)
 {
 	MI_VIF_DevAttr_t dev = {0};
 	MI_VIF_PortAttr_t port = {0};
@@ -519,11 +519,18 @@ static int star6e_pipeline_start_vif(const SensorSelectResult *sensor,
 	}
 	port.frate = I6_VIF_FRATE_FULL;
 	/* Low-delay step 3 (doc LOW_DELAY_PIPELINE.md §3): emit VIF output every
-	 * quarter-frame so the downstream REALTIME chain can start before the full
-	 * frame is captured.  Meaningful ONLY with the full REALTIME chain (VIF→VPE
-	 * is already REALTIME; VPE→VENC becomes REALTIME under low_delay) — alone it
-	 * gives no measurable benefit, so gate it on low_delay.  0 = whole-frame. */
-	port.frameLineCnt = low_delay ? (precrop->h / 4) : 0;
+	 * quarter-frame so the ISP/VPE can start processing before the full frame is
+	 * captured.  0 = whole-frame.
+	 *
+	 * O104 (2026-07-02): this VIF sub-frame emit is the ISP-SIDE lever — the same
+	 * layer majestic's `.isp.lowDelay` touches (majestic leaves the VPE→VENC bind
+	 * on FRAMEBASE, only tightens ISP; measured −1.0 ms G2G, no collapse).  It is
+	 * now DECOUPLED from `video0.low_delay` (which flips the VPE→VENC bind to
+	 * REALTIME — the sub-frame HW path that is BLOCKED on Infinity6E, ADR-032, and
+	 * collapses VENC to fps 0).  Caller passes `vif_subframe` = low_delay OR the
+	 * env knob WAYBEAM_ISP_LOWDELAY, so we can A/B VIF-quarter-frame with the bind
+	 * kept on FRAMEBASE (majestic-equivalent) vs the old coupled behaviour. */
+	port.frameLineCnt = vif_subframe ? (precrop->h / 4) : 0;
 
 	ret = MI_VIF_SetChnPortAttr(0, 0, &port);
 	if (ret != 0) {
@@ -2742,8 +2749,24 @@ int star6e_pipeline_start(Star6ePipelineState *state, const VencConfig *vcfg,
 	venc_api_set_active_precrop(pconf.precrop.x, pconf.precrop.y,
 		pconf.precrop.w, pconf.precrop.h);
 
+	/* O104: VIF sub-frame (ISP-side lever) fires under EITHER the full low_delay
+	 * pipeline OR the standalone isp_low_delay config field (`video0.ispLowDelay`).
+	 * isp_low_delay leaves the VPE→VENC bind on FRAMEBASE (see :2293 — still gated
+	 * on low_delay only), so ispLowDelay=true with lowDelay=false replicates
+	 * majestic's ISP-only low-delay WITHOUT the HW-blocked REALTIME bind.
+	 * Precedence (like shutterMaxUs): env WAYBEAM_ISP_LOWDELAY overrides config
+	 * (=1 force on, =0 force off) for quick A/B without a config rewrite. */
+	bool isp_low_delay = vcfg->video0.isp_low_delay;
+	const char *ild_env = getenv("WAYBEAM_ISP_LOWDELAY");
+	if (ild_env && *ild_env)
+		isp_low_delay = (atoi(ild_env) != 0);
+	bool vif_subframe = vcfg->video0.low_delay || isp_low_delay;
+	WBT("O104 vif_subframe=%d (low_delay=%d isp_low_delay=%d env=%s) bind stays %s\n",
+		vif_subframe, vcfg->video0.low_delay, isp_low_delay,
+		ild_env ? ild_env : "(unset)",
+		vcfg->video0.low_delay ? "REALTIME" : "FRAMEBASE");
 	ret = star6e_pipeline_start_vif(&state->sensor, &pconf.precrop,
-		vcfg->video0.low_delay);
+		vif_subframe);
 	if (ret != 0)
 		goto fail_sensor;
 

@@ -170,6 +170,7 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->video0.slice_rows = 0;        /* 0 = single slice (default) */
 	cfg->video0.superframe_kbits = 0;  /* 0 = super-frame cap off (default) */
 	cfg->video0.low_delay = false;     /* off = FRAMEBASE (current behaviour) */
+	cfg->video0.isp_low_delay = false; /* O104: off = whole-frame VIF (current). ISP-side lever. */
 	cfg->video0.slice_send = false;    /* O77: off = byFrame=1 frame-mode (current) */
 
 	/* intra refresh (video0) — disabled by default; mode-driven */
@@ -557,6 +558,7 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 	v->superframe_kbits = (uint32_t)json_get_int(obj, "superframeKbits",
 		(int)v->superframe_kbits);
 	v->low_delay = json_get_bool(obj, "lowDelay", v->low_delay);
+	v->isp_low_delay = json_get_bool(obj, "ispLowDelay", v->isp_low_delay);
 	v->slice_send = json_get_bool(obj, "sliceSend", v->slice_send);
 
 	/* Resilience preset is the sole driver of intra-refresh + SVC-T
@@ -1190,6 +1192,7 @@ static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_uint(p,   2, "sliceRows",      cfg->video0.slice_rows,      0);
 	pp_field_uint(p,   2, "superframeKbits", cfg->video0.superframe_kbits, 0);
 	pp_field_bool(p,   2, "lowDelay",       cfg->video0.low_delay,       0);
+	pp_field_bool(p,   2, "ispLowDelay",    cfg->video0.isp_low_delay,   0);
 	pp_field_bool(p,   2, "sliceSend",      cfg->video0.slice_send,      0);
 	pp_field_string(p, 2, "resilience",        cfg->video0.resilience,          0);
 	pp_field_double(p, 2, "zoomX",             cfg->video0.zoom_x,              0);
