@@ -36,6 +36,7 @@
     "gopSize": 1.0,
     "qpDelta": -4,
     "frameLost": true,
+    "idrOnBitrateChange": true,
     "sceneThreshold": 0,
     "sceneHoldoff": 2,
     "sliceRows": 0,

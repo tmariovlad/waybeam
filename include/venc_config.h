@@ -113,6 +113,7 @@ typedef struct {
 	double gop_size;       /* seconds between keyframes; 0 = all-intra */
 	int qp_delta;              /* relative I/P QP delta, -12..12 */
 	bool frame_lost;           /* enable frame-lost safety net */
+	bool idr_on_bitrate_change; /* IDR after a live bitrate change (default true) */
 	uint16_t scene_threshold;  /* frame size spike ratio x100 for scene IDR (0=off, 150=1.5x) */
 	uint8_t scene_holdoff;     /* consecutive frames above threshold to trigger */
 	uint16_t slice_rows;       /* multi-slice: CTU rows per slice (0=single slice). Each slice

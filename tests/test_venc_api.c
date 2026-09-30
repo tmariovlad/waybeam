@@ -551,6 +551,42 @@ static int test_multi_set_rejects_restart_fields(void)
 	return failures;
 }
 
+/* O122: video0.idrOnBitrateChange is a known, restart-class field (like frameLost): a multi-set that
+ * carries it is refused as a restart field, not as an unknown one, and nothing is applied. */
+static int test_idr_on_bitrate_change_is_a_restart_field(void)
+{
+	int failures = 0;
+	VencConfig cfg;
+	VencApplyCallbacks cb;
+	int status = 0;
+	char response[1024];
+
+	venc_config_defaults(&cfg);
+	reset_api_cb_state();
+	memset(&cb, 0, sizeof(cb));
+	cb.apply_bitrate = test_apply_bitrate;
+
+	CHECK("idr flag multi rc",
+		apply_set_query_http(&cfg, "star6e", &cb,
+			"video0.bitrate=4096&video0.idrOnBitrateChange=false",
+			&status, response, sizeof(response)) == 0);
+	CHECK("idr flag multi status", status == 400);
+	CHECK("idr flag is a restart field",
+		strstr(response, "multi-set only supports live fields") != NULL);
+	CHECK("idr flag unchanged", cfg.video0.idr_on_bitrate_change == true);
+	CHECK("idr flag no callbacks", g_api_cb_state.apply_bitrate_calls == 0);
+
+	/* control: an unknown key is refused differently */
+	CHECK("unknown key multi rc",
+		apply_set_query_http(&cfg, "star6e", &cb,
+			"video0.bitrate=4096&video0.noSuchField=false",
+			&status, response, sizeof(response)) == 0);
+	CHECK("unknown key is not a restart refusal",
+		strstr(response, "multi-set only supports live fields") == NULL);
+
+	return failures;
+}
+
 static int test_multi_set_rejects_duplicate_fields(void)
 {
 	int failures = 0;
@@ -1214,6 +1250,7 @@ int test_venc_api(void)
 	failures += test_multi_set_awb_grouped_apply();
 	failures += test_multi_set_video_timing_grouped_apply();
 	failures += test_multi_set_rejects_restart_fields();
+	failures += test_idr_on_bitrate_change_is_a_restart_field();
 	failures += test_multi_set_rejects_duplicate_fields();
 	failures += test_multi_set_preflights_missing_callback();
 	failures += test_multi_set_rolls_back_on_apply_failure();

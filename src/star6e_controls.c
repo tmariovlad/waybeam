@@ -196,6 +196,7 @@ static int apply_bitrate(uint32_t kbps)
 	MI_VENC_ChnAttr_t attr = {0};
 	MI_U32 bits;
 	bool frame_lost_enabled = true;
+	bool idr_on_change = true;
 
 	if (kbps > 200000)
 		kbps = 200000;
@@ -203,6 +204,8 @@ static int apply_bitrate(uint32_t kbps)
 
 	if (g_star6e_control_ctx.vcfg)
 		frame_lost_enabled = g_star6e_control_ctx.vcfg->video0.frame_lost;
+	if (g_star6e_control_ctx.vcfg)
+		idr_on_change = g_star6e_control_ctx.vcfg->video0.idr_on_bitrate_change;
 
 	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0)
 		return -1;
@@ -242,8 +245,10 @@ static int apply_bitrate(uint32_t kbps)
 	 * window, default 100 ms) will only IDR on the first step and again
 	 * after the window expires — acceptable because the encoder rate
 	 * controller absorbs small between-IDR changes without decoder
-	 * resync. */
-	if (idr_rate_limit_allow(g_star6e_control_ctx.venc_chn))
+	 * resync.  O122: video0.idrOnBitrateChange=false skips it (rate control
+	 * steps the bitrate often; each IDR is a burst on the link).  Default
+	 * true keeps the old behaviour. */
+	if (idr_on_change && idr_rate_limit_allow(g_star6e_control_ctx.venc_chn))
 		(void)MI_VENC_RequestIdr(g_star6e_control_ctx.venc_chn, 1);
 	return 0;
 }
