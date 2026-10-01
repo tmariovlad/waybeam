@@ -59,6 +59,7 @@ static int test_defaults(void)
 	CHECK("defaults_qp_delta", cfg.video0.qp_delta == -4);
 	CHECK("defaults_frame_lost", cfg.video0.frame_lost == true);
 	CHECK("defaults_idr_on_bitrate_change", cfg.video0.idr_on_bitrate_change == true);
+	CHECK("defaults_profile_baseline", cfg.video0.profile == 0);
 	CHECK("defaults_zoom_off", cfg.video0.zoom_pct == 0.0);
 	CHECK("defaults_zoom_x", cfg.video0.zoom_x == 0.5);
 	CHECK("defaults_zoom_y", cfg.video0.zoom_y == 0.5);
@@ -206,7 +207,7 @@ static int test_load_full_json(void)
 		"  \"video0\": { \"codec\": \"h264\", \"rcMode\": \"vbr\", \"fps\": 90,"
 		/* "codec" above is intentionally legacy — parser must silently drop it. */
 		"    \"size\": \"1280x720\", \"bitrate\": 4096, \"gopSize\": 1, \"qpDelta\": -7,"
-		"    \"frameLost\": false, \"idrOnBitrateChange\": false, \"framing\": \"zoom-2x\", \"zoomX\": 0.25, \"zoomY\": 0.75 },"
+		"    \"frameLost\": false, \"idrOnBitrateChange\": false, \"profile\": 2, \"framing\": \"zoom-2x\", \"zoomX\": 0.25, \"zoomY\": 0.75 },"
 		"  \"outgoing\": { \"enabled\": true, \"server\": \"udp://10.0.0.1:6000\", \"streamMode\": \"compact\", \"maxPayloadSize\": 1200, \"connectedUdp\": false },"
 		"  \"fpv\": { \"roiEnabled\": true, \"roiQp\": -18, \"roiSteps\": 2, \"noiseLevel\": 5 }"
 		"}";
@@ -241,6 +242,7 @@ static int test_load_full_json(void)
 	CHECK("load_qp_delta", cfg.video0.qp_delta == -7);
 	CHECK("load_frame_lost_off", cfg.video0.frame_lost == false);
 	CHECK("load_idr_on_bitrate_change_off", cfg.video0.idr_on_bitrate_change == false);
+	CHECK("load_profile_high", cfg.video0.profile == 2);
 	CHECK("load_framing_zoom2x", strcmp(cfg.video0.framing, "zoom-2x") == 0);
 	CHECK("load_framing_zoom_pct", cfg.video0.zoom_pct == 0.5);
 	CHECK("load_zoom_x", cfg.video0.zoom_x == 0.25);
@@ -384,6 +386,7 @@ static int test_roundtrip(void)
 	cfg.video0.zoom_x = 0.25;
 	cfg.video0.zoom_y = 0.75;
 	cfg.video0.idr_on_bitrate_change = false;
+	cfg.video0.profile = 1;
 
 	char *json = venc_config_to_json_string(&cfg);
 	CHECK("serialize_ok", json != NULL);
@@ -412,9 +415,29 @@ static int test_roundtrip(void)
 	CHECK("roundtrip_zoom_x", cfg2.video0.zoom_x == 0.25);
 	CHECK("roundtrip_zoom_y", cfg2.video0.zoom_y == 0.75);
 	CHECK("roundtrip_idr_on_bitrate_change", cfg2.video0.idr_on_bitrate_change == false);
+	CHECK("roundtrip_profile_main", cfg2.video0.profile == 1);
 	/* Unchanged fields preserved */
 	CHECK("roundtrip_gop", cfg2.video0.gop_size == 1.0);
 
+	return failures;
+}
+
+/* video0.profile outside 0..2 is not a profile: back to the stock 0 (Baseline), not clamped to High. */
+static int test_profile_out_of_range(void)
+{
+	int failures = 0;
+	const char *bad[] = { "{ \"video0\": { \"profile\": 7 } }", "{ \"video0\": { \"profile\": -1 } }" };
+	for (int i = 0; i < 2; i++) {
+		char *path = write_temp_json(bad[i]);
+		CHECK("profile_range_tmpfile", path != NULL);
+		if (!path) return failures;
+		VencConfig cfg;
+		venc_config_defaults(&cfg);
+		venc_config_load(path, &cfg);
+		unlink(path);
+		free(path);
+		CHECK(i ? "profile_minus1_is_baseline" : "profile_7_is_baseline", cfg.video0.profile == 0);
+	}
 	return failures;
 }
 
@@ -1046,6 +1069,7 @@ int test_venc_config(void)
 	failures += test_uri_parsing();
 	failures += test_roundtrip();
 	failures += test_overclock_clamping();
+	failures += test_profile_out_of_range();
 	failures += test_noise_level_clamping();
 	failures += test_framing_presets();
 	failures += test_resolution_aliases();

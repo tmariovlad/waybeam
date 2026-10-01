@@ -401,6 +401,7 @@ static const FieldDesc g_fields[] = {
 	FIELD(video0, qp_delta,        FT_INT,    MUT_LIVE),
 	FIELD(video0, frame_lost,      FT_BOOL,   MUT_RESTART),
 	FIELD(video0, idr_on_bitrate_change, FT_BOOL, MUT_RESTART),
+	FIELD(video0, profile,         FT_INT,    MUT_RESTART),
 	FIELD(video0, superframe_kbits, FT_UINT,  MUT_RESTART),
 	FIELD(outgoing, enabled,           FT_BOOL,   MUT_LIVE),
 	FIELD(outgoing, server,            FT_STRING, MUT_LIVE),
@@ -754,6 +755,10 @@ static const char *validate_field_cfg(const VencConfig *cfg, const char *key)
 		if (strcmp(c, "h265") != 0 && strcmp(c, "hevc") != 0 &&
 		    strcmp(c, "h264") != 0 && strcmp(c, "avc") != 0)
 			return "codec must be 'h265' or 'h264'";
+	}
+	if (strcmp(key, "video0.profile") == 0) {
+		if (cfg->video0.profile < 0 || cfg->video0.profile > 2)
+			return "profile must be in range [0, 2]";
 	}
 	if (strcmp(key, "video0.qp_delta") == 0) {
 		if (cfg->video0.qp_delta < -12 || cfg->video0.qp_delta > 12)

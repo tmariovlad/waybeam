@@ -6,6 +6,13 @@
 #include <string.h>
 #include <unistd.h>
 
+uint32_t pipeline_common_h26x_profile(int is_h265, int cfg_profile)
+{
+	if (is_h265 || cfg_profile < 0 || cfg_profile > 2)
+		return 0;
+	return (uint32_t)cfg_profile;
+}
+
 uint32_t pipeline_common_frame_lost_threshold(uint32_t kbps)
 {
 	uint32_t bits, margin;

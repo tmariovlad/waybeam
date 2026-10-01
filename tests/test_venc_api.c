@@ -576,6 +576,23 @@ static int test_idr_on_bitrate_change_is_a_restart_field(void)
 	CHECK("idr flag unchanged", cfg.video0.idr_on_bitrate_change == true);
 	CHECK("idr flag no callbacks", g_api_cb_state.apply_bitrate_calls == 0);
 
+	/* video0.profile is a restart-class field too (the h26x attr is set at channel create) */
+	CHECK("profile multi rc",
+		apply_set_query_http(&cfg, "star6e", &cb,
+			"video0.bitrate=4096&video0.profile=2",
+			&status, response, sizeof(response)) == 0);
+	CHECK("profile is a restart field",
+		strstr(response, "multi-set only supports live fields") != NULL);
+	CHECK("profile unchanged", cfg.video0.profile == 0);
+
+	CHECK("profile range reject rc",
+		apply_set_query_http(&cfg, "star6e", NULL, "video0.profile=7",
+			&status, response, sizeof(response)) == 0);
+	CHECK("profile range reject status", status == 409);
+	CHECK("profile range reject error",
+		strstr(response, "profile must be in range [0, 2]") != NULL);
+	CHECK("profile range unchanged", cfg.video0.profile == 0);
+
 	/* control: an unknown key is refused differently */
 	CHECK("unknown key multi rc",
 		apply_set_query_http(&cfg, "star6e", &cb,

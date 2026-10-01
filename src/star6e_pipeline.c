@@ -1257,9 +1257,9 @@ static void star6e_ae_crop_mark_ready(void)
 
 static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 #ifdef WAYBEAM_ENABLE_RING
-	uint32_t width, uint32_t height, int slice_send)
+	uint32_t width, uint32_t height, int slice_send, uint32_t profile)
 #else
-	uint32_t width, uint32_t height)
+	uint32_t width, uint32_t height, uint32_t profile)
 #endif
 {
 	attr->maxWidth = width;
@@ -1278,7 +1278,7 @@ static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 		else
 			attr->bufSize = width * height * 3 / 2;
 	}
-	attr->profile = 0;
+	attr->profile = profile;
 	/* O77: byFrame=1 (default) makes GetStream return only at frame-done.
 	 * byFrame=0 makes the Wave5 VPU raise a slice-done IRQ per slice
 	 * (mi_venc.ko IsrSliceDoneCnt + _MI_VENC_EnableSliceIrq, PROVEN by
@@ -1291,7 +1291,7 @@ static void star6e_pipeline_fill_h26x_attr(i6_venc_attr_h26x *attr,
 #else
 	/* Production default: fixed buffer size and frame-mode (16c0e87 baseline). */
 	attr->bufSize = width * height * 3 / 2;
-	attr->profile = 0;
+	attr->profile = profile;
 	attr->byFrame = 1;
 #endif
 	attr->width = width;
@@ -1323,20 +1323,23 @@ static int star6e_pipeline_start_venc(uint32_t width, uint32_t height,
 	int slice_send = (vcfg && vcfg->video0.slice_send &&
 	                  vcfg->video0.slice_rows > 0) ? 1 : 0;
 #endif
+	/* O129: video0.profile (H.264 only; 0 = the stock Baseline) */
+	uint32_t profile = pipeline_common_h26x_profile(codec == PT_H265,
+		vcfg ? vcfg->video0.profile : 0);
 
 	if (codec == PT_H265) {
 		attr.attrib.codec = I6_VENC_CODEC_H265;
 #ifdef WAYBEAM_ENABLE_RING
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height, slice_send);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height, slice_send, profile);
 #else
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h265, width, height, profile);
 #endif
 	} else {
 		attr.attrib.codec = I6_VENC_CODEC_H264;
 #ifdef WAYBEAM_ENABLE_RING
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height, slice_send);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height, slice_send, profile);
 #else
-		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height);
+		star6e_pipeline_fill_h26x_attr(&attr.attrib.h264, width, height, profile);
 #endif
 	}
 

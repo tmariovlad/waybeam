@@ -74,6 +74,11 @@ int pipeline_common_cap_exposure_for_fps(uint32_t fps,
  * Clamps kbps to 200000 to keep kbps*1024 inside uint32_t. */
 uint32_t pipeline_common_frame_lost_threshold(uint32_t kbps);
 
+/* The profile for the h26x attr at channel create (O129): H.264 takes cfg_profile 0 Baseline / 1 Main /
+ * 2 High; H.265 keeps the stock 0 (its profile numbering on this SDK is not established); anything outside
+ * 0..2 is 0. */
+uint32_t pipeline_common_h26x_profile(int is_h265, int cfg_profile);
+
 /** Compute crop rectangle for the VIF/SCL stage.
  * keep_aspect = true  → center-crop the sensor to the aspect ratio of
  *                       image_w x image_h with 2-pixel alignment.

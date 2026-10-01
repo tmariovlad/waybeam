@@ -119,6 +119,7 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->video0.qp_delta = -4;
 	cfg->video0.frame_lost = true;
 	cfg->video0.idr_on_bitrate_change = true;
+	cfg->video0.profile = 0;
 
 	/* outgoing */
 	cfg->outgoing.enabled = false;
@@ -552,6 +553,8 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 	v->frame_lost = json_get_bool(obj, "frameLost", v->frame_lost);
 	v->idr_on_bitrate_change = json_get_bool(obj, "idrOnBitrateChange",
 		v->idr_on_bitrate_change);
+	v->profile = json_get_int(obj, "profile", v->profile);
+	if (v->profile < 0 || v->profile > 2) v->profile = 0;   /* not a profile: stock Baseline, never clamped to High */
 	v->scene_threshold = (uint16_t)json_get_int(obj, "sceneThreshold",
 		(int)v->scene_threshold);
 	v->scene_holdoff = (uint8_t)json_get_int(obj, "sceneHoldoff",
@@ -1191,6 +1194,7 @@ static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_int(p,    2, "qpDelta",        cfg->video0.qp_delta,        0);
 	pp_field_bool(p,   2, "frameLost",      cfg->video0.frame_lost,      0);
 	pp_field_bool(p,   2, "idrOnBitrateChange", cfg->video0.idr_on_bitrate_change, 0);
+	pp_field_int(p,    2, "profile",        cfg->video0.profile,         0);
 	pp_field_uint(p,   2, "sceneThreshold", cfg->video0.scene_threshold, 0);
 	pp_field_uint(p,   2, "sceneHoldoff",   cfg->video0.scene_holdoff,   0);
 	pp_field_uint(p,   2, "sliceRows",      cfg->video0.slice_rows,      0);
@@ -1392,6 +1396,7 @@ static cJSON *config_to_cjson(const VencConfig *cfg)
 		cJSON_AddBoolToObject(vid, "frameLost", cfg->video0.frame_lost);
 		cJSON_AddBoolToObject(vid, "idrOnBitrateChange",
 			cfg->video0.idr_on_bitrate_change);
+		cJSON_AddNumberToObject(vid, "profile", cfg->video0.profile);
 		cJSON_AddNumberToObject(vid, "sceneThreshold", cfg->video0.scene_threshold);
 		cJSON_AddNumberToObject(vid, "sceneHoldoff", cfg->video0.scene_holdoff);
 		cJSON_AddStringToObject(vid, "resilience", cfg->video0.resilience);

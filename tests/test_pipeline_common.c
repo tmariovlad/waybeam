@@ -186,5 +186,14 @@ int test_pipeline_common(void)
 	unlink(fixture_a);
 	rmdir(tmp_dir);
 
+	/* O129: the profile written into the h26x attr. H.264 takes the config's 0/1/2; H.265 keeps the
+	 * stock 0 (its profile numbering on this SDK is not established); anything else is 0. */
+	CHECK("profile h264 baseline", pipeline_common_h26x_profile(0, 0) == 0);
+	CHECK("profile h264 main", pipeline_common_h26x_profile(0, 1) == 1);
+	CHECK("profile h264 high", pipeline_common_h26x_profile(0, 2) == 2);
+	CHECK("profile h265 keeps 0", pipeline_common_h26x_profile(1, 2) == 0);
+	CHECK("profile out of range is 0", pipeline_common_h26x_profile(0, 3) == 0 &&
+	      pipeline_common_h26x_profile(0, -1) == 0);
+
 	return failures;
 }
