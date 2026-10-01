@@ -7,6 +7,7 @@
 #include "star6e_cus3a.h"
 #include "star6e_iq.h"
 #include "star6e_output.h"
+#include "star6e_qp_bounds.h"
 #include "venc_api.h"
 #include "venc_jpeg.h"
 
@@ -303,6 +304,27 @@ static int apply_zoom(double pct, double x, double y)
 static int apply_pause_stab(bool paused)
 {
 	return star6e_pipeline_set_pause_stab(paused);
+}
+
+/* O129 #6: the QP bounds from the json, once at start (restart-class keys); a mode without P bounds logs them */
+int star6e_controls_apply_qp_bounds(int min_qp, int max_qp, int min_iqp, int max_iqp)
+{
+	MI_VENC_ChnAttr_t attr = {0};
+	MI_VENC_RcParam_t param = {0};
+	Star6eQpBounds b = { (uint32_t)min_qp, (uint32_t)max_qp, (uint32_t)min_iqp, (uint32_t)max_iqp };
+	int ignored;
+
+	if (MI_VENC_GetChnAttr(g_star6e_control_ctx.venc_chn, &attr) != 0 ||
+	    MI_VENC_GetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0)
+		return -1;
+	ignored = star6e_qp_bounds_apply(attr.rate.mode, &param, &b);
+	if (ignored < 0 || MI_VENC_SetRcParam(g_star6e_control_ctx.venc_chn, &param) != 0) {
+		printf("> QP bounds NOT applied (rate mode %d)\n", attr.rate.mode);
+		return -1;
+	}
+	printf("> QP bounds: P %d..%d I %d..%d (0 = SDK's own)%s\n", min_qp, max_qp, min_iqp, max_iqp,
+		ignored ? ", P bounds ignored: this rate mode has none" : "");
+	return 0;
 }
 
 static int apply_qp_delta(int delta)

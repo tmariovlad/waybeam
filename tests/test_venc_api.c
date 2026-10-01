@@ -593,6 +593,21 @@ static int test_idr_on_bitrate_change_is_a_restart_field(void)
 		strstr(response, "profile must be in range [0, 2]") != NULL);
 	CHECK("profile range unchanged", cfg.video0.profile == 0);
 
+	/* QP bounds: restart-class (applied at start), range 0..51 */
+	CHECK("maxqp multi rc",
+		apply_set_query_http(&cfg, "star6e", &cb,
+			"video0.bitrate=4096&video0.maxQp=40",
+			&status, response, sizeof(response)) == 0);
+	CHECK("maxqp is a restart field",
+		strstr(response, "multi-set only supports live fields") != NULL);
+	CHECK("maxqp range reject rc",
+		apply_set_query_http(&cfg, "star6e", NULL, "video0.maxQp=52",
+			&status, response, sizeof(response)) == 0);
+	CHECK("maxqp range reject status", status == 409);
+	CHECK("maxqp range reject error",
+		strstr(response, "QP bounds must be in range [0, 51]") != NULL);
+	CHECK("maxqp unchanged", cfg.video0.max_qp == 0);
+
 	/* control: an unknown key is refused differently */
 	CHECK("unknown key multi rc",
 		apply_set_query_http(&cfg, "star6e", &cb,

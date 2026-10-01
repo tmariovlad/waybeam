@@ -115,6 +115,8 @@ typedef struct {
 	bool frame_lost;           /* enable frame-lost safety net */
 	bool idr_on_bitrate_change; /* IDR after a live bitrate change (default true) */
 	int profile;               /* H.264 profile at channel create: 0 Baseline (stock), 1 Main, 2 High; H.265 keeps 0 */
+	int min_qp, max_qp;        /* P-frame QP bounds 1..51, 0 = the SDK's own (CBR only on this SDK) */
+	int min_iqp, max_iqp;      /* I-frame QP bounds 1..51, 0 = the SDK's own */
 	uint16_t scene_threshold;  /* frame size spike ratio x100 for scene IDR (0=off, 150=1.5x) */
 	uint8_t scene_holdoff;     /* consecutive frames above threshold to trigger */
 	uint16_t slice_rows;       /* multi-slice: CTU rows per slice (0=single slice). Each slice

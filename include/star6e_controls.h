@@ -25,6 +25,7 @@ int star6e_controls_apply_roi_qp(int qp);
 
 /** Apply relative I/P QP delta to the running encoder. */
 int star6e_controls_apply_qp_delta(int delta);
+int star6e_controls_apply_qp_bounds(int min_qp, int max_qp, int min_iqp, int max_iqp);
 
 /** Apply frame-lost threshold to a VENC channel.
  *  When enabled, sets the threshold to 120% of target bitrate.

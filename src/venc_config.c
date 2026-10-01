@@ -64,6 +64,14 @@ static double json_get_double(const cJSON *obj, const char *key, double fallback
 
 /* ── Defaults ────────────────────────────────────────────────────────── */
 
+/* O129 #6: a QP bound is 1..51 or 0 (the SDK's own); a min above its max resets that pair to 0. */
+static void qp_bounds_sanitize(int *lo, int *hi)
+{
+	if (*lo < 0 || *lo > 51) *lo = 0;
+	if (*hi < 0 || *hi > 51) *hi = 0;
+	if (*lo && *hi && *lo > *hi) *lo = *hi = 0;
+}
+
 void venc_config_defaults(VencConfig *cfg)
 {
 	memset(cfg, 0, sizeof(*cfg));
@@ -120,6 +128,8 @@ void venc_config_defaults(VencConfig *cfg)
 	cfg->video0.frame_lost = true;
 	cfg->video0.idr_on_bitrate_change = true;
 	cfg->video0.profile = 0;
+	cfg->video0.min_qp = cfg->video0.max_qp = 0;
+	cfg->video0.min_iqp = cfg->video0.max_iqp = 0;
 
 	/* outgoing */
 	cfg->outgoing.enabled = false;
@@ -555,6 +565,12 @@ static void load_video0(const cJSON *root, VencConfigVideo *v)
 		v->idr_on_bitrate_change);
 	v->profile = json_get_int(obj, "profile", v->profile);
 	if (v->profile < 0 || v->profile > 2) v->profile = 0;   /* not a profile: stock Baseline, never clamped to High */
+	v->min_qp = json_get_int(obj, "minQp", v->min_qp);
+	v->max_qp = json_get_int(obj, "maxQp", v->max_qp);
+	v->min_iqp = json_get_int(obj, "minIQp", v->min_iqp);
+	v->max_iqp = json_get_int(obj, "maxIQp", v->max_iqp);
+	qp_bounds_sanitize(&v->min_qp, &v->max_qp);
+	qp_bounds_sanitize(&v->min_iqp, &v->max_iqp);
 	v->scene_threshold = (uint16_t)json_get_int(obj, "sceneThreshold",
 		(int)v->scene_threshold);
 	v->scene_holdoff = (uint8_t)json_get_int(obj, "sceneHoldoff",
@@ -1195,6 +1211,10 @@ static void render_video0(PrettyBuf *p, const VencConfig *cfg, int is_last)
 	pp_field_bool(p,   2, "frameLost",      cfg->video0.frame_lost,      0);
 	pp_field_bool(p,   2, "idrOnBitrateChange", cfg->video0.idr_on_bitrate_change, 0);
 	pp_field_int(p,    2, "profile",        cfg->video0.profile,         0);
+	pp_field_int(p,    2, "minQp",          cfg->video0.min_qp,          0);
+	pp_field_int(p,    2, "maxQp",          cfg->video0.max_qp,          0);
+	pp_field_int(p,    2, "minIQp",         cfg->video0.min_iqp,         0);
+	pp_field_int(p,    2, "maxIQp",         cfg->video0.max_iqp,         0);
 	pp_field_uint(p,   2, "sceneThreshold", cfg->video0.scene_threshold, 0);
 	pp_field_uint(p,   2, "sceneHoldoff",   cfg->video0.scene_holdoff,   0);
 	pp_field_uint(p,   2, "sliceRows",      cfg->video0.slice_rows,      0);
@@ -1397,6 +1417,10 @@ static cJSON *config_to_cjson(const VencConfig *cfg)
 		cJSON_AddBoolToObject(vid, "idrOnBitrateChange",
 			cfg->video0.idr_on_bitrate_change);
 		cJSON_AddNumberToObject(vid, "profile", cfg->video0.profile);
+		cJSON_AddNumberToObject(vid, "minQp", cfg->video0.min_qp);
+		cJSON_AddNumberToObject(vid, "maxQp", cfg->video0.max_qp);
+		cJSON_AddNumberToObject(vid, "minIQp", cfg->video0.min_iqp);
+		cJSON_AddNumberToObject(vid, "maxIQp", cfg->video0.max_iqp);
 		cJSON_AddNumberToObject(vid, "sceneThreshold", cfg->video0.scene_threshold);
 		cJSON_AddNumberToObject(vid, "sceneHoldoff", cfg->video0.scene_holdoff);
 		cJSON_AddStringToObject(vid, "resilience", cfg->video0.resilience);

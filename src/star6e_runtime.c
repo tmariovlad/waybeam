@@ -710,6 +710,10 @@ static int star6e_runtime_apply_startup_controls(Star6eRunnerContext *ctx)
 	if (vcfg->video0.qp_delta != 0) {
 		star6e_controls_apply_qp_delta(vcfg->video0.qp_delta);
 	}
+	if (vcfg->video0.min_qp || vcfg->video0.max_qp || vcfg->video0.min_iqp || vcfg->video0.max_iqp) {
+		star6e_controls_apply_qp_bounds(vcfg->video0.min_qp, vcfg->video0.max_qp,
+			vcfg->video0.min_iqp, vcfg->video0.max_iqp);
+	}
 
 	if (!ps->output_enabled) {
 		ps->stored_fps = vcfg->video0.fps;

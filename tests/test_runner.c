@@ -33,6 +33,7 @@ extern int test_ts_mux(void);
 extern int test_audio_ring(void);
 extern int test_star6e_ts_recorder(void);
 extern int test_idr_rate_limit(void);
+extern int test_star6e_qp_bounds(void);
 extern int test_backend(void);
 extern int test_debug_osd(void);
 extern int test_intra_refresh(void);
@@ -124,6 +125,8 @@ int main(void)
 
 	printf("\n--- test_idr_rate_limit ---\n");
 	failures += test_idr_rate_limit();
+	printf("\n--- test_star6e_qp_bounds ---\n");
+	failures += test_star6e_qp_bounds();
 
 	printf("\n--- test_backend ---\n");
 	failures += test_backend();
