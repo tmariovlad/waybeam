@@ -40,6 +40,7 @@ typedef struct {
 	int apply_fps_calls;
 	int apply_gop_calls;
 	int apply_qp_delta_calls;
+	int apply_qp_bounds_calls;
 	int apply_verbose_calls;
 	int apply_awb_mode_calls;
 	int apply_server_calls;
@@ -51,6 +52,7 @@ typedef struct {
 	uint32_t last_fps;
 	uint32_t last_gop;
 	int last_qp_delta;
+	int last_qp_bounds[4];
 	bool last_verbose;
 	int last_awb_mode;
 	uint32_t last_awb_ct;
@@ -270,6 +272,16 @@ static int test_apply_qp_delta(int delta)
 {
 	g_api_cb_state.apply_qp_delta_calls++;
 	g_api_cb_state.last_qp_delta = delta;
+	return 0;
+}
+
+static int test_apply_qp_bounds(int min_qp, int max_qp, int min_iqp, int max_iqp)
+{
+	g_api_cb_state.apply_qp_bounds_calls++;
+	g_api_cb_state.last_qp_bounds[0] = min_qp;
+	g_api_cb_state.last_qp_bounds[1] = max_qp;
+	g_api_cb_state.last_qp_bounds[2] = min_iqp;
+	g_api_cb_state.last_qp_bounds[3] = max_iqp;
 	return 0;
 }
 
@@ -593,13 +605,7 @@ static int test_idr_on_bitrate_change_is_a_restart_field(void)
 		strstr(response, "profile must be in range [0, 2]") != NULL);
 	CHECK("profile range unchanged", cfg.video0.profile == 0);
 
-	/* QP bounds: restart-class (applied at start), range 0..51 */
-	CHECK("maxqp multi rc",
-		apply_set_query_http(&cfg, "star6e", &cb,
-			"video0.bitrate=4096&video0.maxQp=40",
-			&status, response, sizeof(response)) == 0);
-	CHECK("maxqp is a restart field",
-		strstr(response, "multi-set only supports live fields") != NULL);
+	/* QP bounds: live since O130 (test_live_set_qp_bounds); range 0..51 */
 	CHECK("maxqp range reject rc",
 		apply_set_query_http(&cfg, "star6e", NULL, "video0.maxQp=52",
 			&status, response, sizeof(response)) == 0);
@@ -615,6 +621,69 @@ static int test_idr_on_bitrate_change_is_a_restart_field(void)
 			&status, response, sizeof(response)) == 0);
 	CHECK("unknown key is not a restart refusal",
 		strstr(response, "multi-set only supports live fields") == NULL);
+
+	return failures;
+}
+
+/* O130: the QP bounds are live keys, applied together through one backend hook that requests no IDR
+ * (star6e_controls_apply_qp_bounds -> SetRcParam); probe P2 of rate-control 07-RESEARCH asks whether SetRcParam alone
+ * inserts an I-frame. */
+static int test_live_set_qp_bounds(void)
+{
+	int failures = 0;
+	VencConfig cfg;
+	VencApplyCallbacks cb;
+	int status = 0;
+	char response[1024];
+
+	venc_config_defaults(&cfg);
+	reset_api_cb_state();
+	memset(&cb, 0, sizeof(cb));
+	cb.apply_qp_bounds = test_apply_qp_bounds;
+
+	CHECK("qpb single rc",
+		apply_set_query_http(&cfg, "star6e", &cb, "video0.maxQp=40",
+			&status, response, sizeof(response)) == 0);
+	CHECK("qpb single status", status == 200);
+	CHECK("qpb single cfg", cfg.video0.max_qp == 40);
+	CHECK("qpb single one call", g_api_cb_state.apply_qp_bounds_calls == 1);
+	CHECK("qpb single all four bounds",
+		g_api_cb_state.last_qp_bounds[0] == 0 && g_api_cb_state.last_qp_bounds[1] == 40 &&
+		g_api_cb_state.last_qp_bounds[2] == 0 && g_api_cb_state.last_qp_bounds[3] == 0);
+
+	CHECK("qpb multi rc",
+		apply_set_query_http(&cfg, "star6e", &cb, "video0.minQp=30&video0.maxIQp=45",
+			&status, response, sizeof(response)) == 0);
+	CHECK("qpb multi status", status == 200);
+	CHECK("qpb multi grouped into one call", g_api_cb_state.apply_qp_bounds_calls == 2);
+	CHECK("qpb multi values",
+		g_api_cb_state.last_qp_bounds[0] == 30 && g_api_cb_state.last_qp_bounds[1] == 40 &&
+		g_api_cb_state.last_qp_bounds[2] == 0 && g_api_cb_state.last_qp_bounds[3] == 45);
+
+	CHECK("qpb range rc",
+		apply_set_query_http(&cfg, "star6e", &cb, "video0.minIQp=52",
+			&status, response, sizeof(response)) == 0);
+	CHECK("qpb range status", status == 409);
+	CHECK("qpb range error", strstr(response, "QP bounds must be in range [0, 51]") != NULL);
+	CHECK("qpb range no call", g_api_cb_state.apply_qp_bounds_calls == 2);
+	CHECK("qpb range unchanged", cfg.video0.min_iqp == 0);
+
+	/* min > max (both set) is refused live; at load the pair is reset to the SDK's own (venc_config.c) */
+	CHECK("qpb min>max rc",
+		apply_set_query_http(&cfg, "star6e", &cb, "video0.minQp=41",
+			&status, response, sizeof(response)) == 0);
+	CHECK("qpb min>max status", status == 409);
+	CHECK("qpb min>max error", strstr(response, "QP bounds: min must not exceed max") != NULL);
+	CHECK("qpb min>max no call", g_api_cb_state.apply_qp_bounds_calls == 2);
+	CHECK("qpb min>max unchanged", cfg.video0.min_qp == 30);
+
+	/* a backend without the hook refuses the live set at preflight */
+	memset(&cb, 0, sizeof(cb));
+	CHECK("qpb no-cb rc",
+		apply_set_query_http(&cfg, "star6e", &cb, "video0.maxQp=38",
+			&status, response, sizeof(response)) == 0);
+	CHECK("qpb no-cb status", status == 501);
+	CHECK("qpb no-cb unchanged", cfg.video0.max_qp == 40);
 
 	return failures;
 }
@@ -1283,6 +1352,7 @@ int test_venc_api(void)
 	failures += test_multi_set_video_timing_grouped_apply();
 	failures += test_multi_set_rejects_restart_fields();
 	failures += test_idr_on_bitrate_change_is_a_restart_field();
+	failures += test_live_set_qp_bounds();
 	failures += test_multi_set_rejects_duplicate_fields();
 	failures += test_multi_set_preflights_missing_callback();
 	failures += test_multi_set_rolls_back_on_apply_failure();

@@ -402,10 +402,10 @@ static const FieldDesc g_fields[] = {
 	FIELD(video0, frame_lost,      FT_BOOL,   MUT_RESTART),
 	FIELD(video0, idr_on_bitrate_change, FT_BOOL, MUT_RESTART),
 	FIELD(video0, profile,         FT_INT,    MUT_RESTART),
-	FIELD(video0, min_qp,          FT_INT,    MUT_RESTART),
-	FIELD(video0, max_qp,          FT_INT,    MUT_RESTART),
-	FIELD(video0, min_iqp,         FT_INT,    MUT_RESTART),
-	FIELD(video0, max_iqp,         FT_INT,    MUT_RESTART),
+	FIELD(video0, min_qp,          FT_INT,    MUT_LIVE),   /* O130: live, SetRcParam, no IDR */
+	FIELD(video0, max_qp,          FT_INT,    MUT_LIVE),
+	FIELD(video0, min_iqp,         FT_INT,    MUT_LIVE),
+	FIELD(video0, max_iqp,         FT_INT,    MUT_LIVE),
 	FIELD(video0, superframe_kbits, FT_UINT,  MUT_RESTART),
 	FIELD(outgoing, enabled,           FT_BOOL,   MUT_LIVE),
 	FIELD(outgoing, server,            FT_STRING, MUT_LIVE),
@@ -770,6 +770,10 @@ static const char *validate_field_cfg(const VencConfig *cfg, const char *key)
 		if (v->min_qp < 0 || v->min_qp > 51 || v->max_qp < 0 || v->max_qp > 51 ||
 		    v->min_iqp < 0 || v->min_iqp > 51 || v->max_iqp < 0 || v->max_iqp > 51)
 			return "QP bounds must be in range [0, 51]";
+		/* 0 = the SDK's own bound; a pair with both set must be ordered (at load such a pair is reset instead) */
+		if ((v->min_qp && v->max_qp && v->min_qp > v->max_qp) ||
+		    (v->min_iqp && v->max_iqp && v->min_iqp > v->max_iqp))
+			return "QP bounds: min must not exceed max";
 	}
 	if (strcmp(key, "video0.profile") == 0) {
 		if (cfg->video0.profile < 0 || cfg->video0.profile > 2)
@@ -1029,6 +1033,7 @@ typedef enum {
 	LIVE_GROUP_BITRATE = 0,
 	LIVE_GROUP_VIDEO_TIMING,
 	LIVE_GROUP_QP_DELTA,
+	LIVE_GROUP_QP_BOUNDS,
 	LIVE_GROUP_ROI,
 	LIVE_GROUP_GAIN_MAX,
 	LIVE_GROUP_GAIN_MIN,
@@ -1185,6 +1190,9 @@ static LiveApplyGroup live_group_for_key(const char *canonical_key)
 		return LIVE_GROUP_VIDEO_TIMING;
 	if (strcmp(canonical_key, "video0.qp_delta") == 0)
 		return LIVE_GROUP_QP_DELTA;
+	if (strcmp(canonical_key, "video0.min_qp") == 0 || strcmp(canonical_key, "video0.max_qp") == 0 ||
+	    strcmp(canonical_key, "video0.min_iqp") == 0 || strcmp(canonical_key, "video0.max_iqp") == 0)
+		return LIVE_GROUP_QP_BOUNDS;
 	if (strcmp(canonical_key, "fpv.roi_enabled") == 0 ||
 	    strcmp(canonical_key, "fpv.roi_qp") == 0 ||
 	    strcmp(canonical_key, "fpv.roi_steps") == 0 ||
@@ -1234,6 +1242,8 @@ static const char *live_group_name(LiveApplyGroup group)
 		return "video0.fps/video0.gop_size";
 	case LIVE_GROUP_QP_DELTA:
 		return "video0.qp_delta";
+	case LIVE_GROUP_QP_BOUNDS:
+		return "video0.minQp/maxQp/minIQp/maxIQp";
 	case LIVE_GROUP_ROI:
 		return "fpv.roi_*";
 	case LIVE_GROUP_GAIN_MAX:
@@ -1393,6 +1403,8 @@ static int live_group_supported_for_cfg(const VencConfig *cfg,
 		return 1;
 	case LIVE_GROUP_QP_DELTA:
 		return g_cb->apply_qp_delta != NULL;
+	case LIVE_GROUP_QP_BOUNDS:
+		return g_cb->apply_qp_bounds != NULL;
 	case LIVE_GROUP_ROI:
 		return g_cb->apply_roi_qp != NULL;
 	case LIVE_GROUP_GAIN_MAX:
@@ -1451,6 +1463,12 @@ static void copy_live_group_fields(VencConfig *dst, const VencConfig *src,
 		break;
 	case LIVE_GROUP_QP_DELTA:
 		dst->video0.qp_delta = src->video0.qp_delta;
+		break;
+	case LIVE_GROUP_QP_BOUNDS:
+		dst->video0.min_qp = src->video0.min_qp;
+		dst->video0.max_qp = src->video0.max_qp;
+		dst->video0.min_iqp = src->video0.min_iqp;
+		dst->video0.max_iqp = src->video0.max_iqp;
 		break;
 	case LIVE_GROUP_ROI:
 		dst->fpv.roi_enabled = src->fpv.roi_enabled;
@@ -1572,6 +1590,9 @@ static int apply_live_group_for_cfg(const VencConfig *cfg,
 		return 0;
 	case LIVE_GROUP_QP_DELTA:
 		return g_cb->apply_qp_delta(cfg->video0.qp_delta);
+	case LIVE_GROUP_QP_BOUNDS:
+		return g_cb->apply_qp_bounds(cfg->video0.min_qp, cfg->video0.max_qp,
+			cfg->video0.min_iqp, cfg->video0.max_iqp);
 	case LIVE_GROUP_ROI:
 		return g_cb->apply_roi_qp(cfg->fpv.roi_qp);
 	case LIVE_GROUP_GAIN_MAX:

@@ -1225,6 +1225,7 @@ static const VencApplyCallbacks g_star6e_apply_callbacks = {
 	.apply_fps = apply_fps,
 	.apply_gop = apply_gop,
 	.apply_qp_delta = apply_qp_delta,
+	.apply_qp_bounds = star6e_controls_apply_qp_bounds,   /* O130: SetRcParam, no RequestIdr */
 	.apply_roi_qp = apply_roi_qp,
 	.apply_gain_max = apply_gain_max,
 	.apply_gain_min = apply_gain_min,

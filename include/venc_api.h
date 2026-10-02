@@ -15,6 +15,8 @@ typedef struct {
 	int (*apply_fps)(uint32_t fps);
 	int (*apply_gop)(uint32_t gop_size);
 	int (*apply_qp_delta)(int delta);
+	/* O130: the four QP bounds together (0 = the SDK's own), SetRcParam, no IDR */
+	int (*apply_qp_bounds)(int min_qp, int max_qp, int min_iqp, int max_iqp);
 	int (*apply_roi_qp)(int qp);
 	int (*apply_gain_max)(uint32_t gain);
 	int (*apply_gain_min)(uint32_t gain);
