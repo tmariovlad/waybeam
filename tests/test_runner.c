@@ -37,6 +37,7 @@ extern int test_backend(void);
 extern int test_debug_osd(void);
 extern int test_intra_refresh(void);
 extern int test_venc_jpeg(void);
+extern int test_mi_fd_release(void);
 
 int main(void)
 {
@@ -136,6 +137,9 @@ int main(void)
 
 	printf("\n--- test_venc_jpeg ---\n");
 	failures += test_venc_jpeg();
+
+	printf("\n--- test_mi_fd_release ---\n");
+	failures += test_mi_fd_release();
 
 	printf("\n=== Results: %d passed, %d failed ===\n",
 		g_test_pass_count, g_test_fail_count);

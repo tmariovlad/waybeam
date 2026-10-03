@@ -5,6 +5,7 @@
 #include "debug_osd.h"
 #include "idr_rate_limit.h"
 #include "imu_bmi270.h"
+#include "mi_fd_release.h"
 #include "pipeline_common.h"
 #include "scene_detector.h"
 #include "sdk_quiet.h"
@@ -1369,6 +1370,13 @@ static void star6e_runner_teardown(void *opaque)
 	{
 		pid_t watchdog = fork();
 		if (watchdog == 0) {
+			/* Drop the inherited copies of every fd but stdio,
+			 * first of all the /dev/mi_* ones.  Holding them made
+			 * this child's own exit the real release of the MI
+			 * devices, under PF_EXITING and in fd order, which can
+			 * leave mi_common's "client exiting" flag set and cost
+			 * the next waybeam 2 s per MI open (no_frames, F2). */
+			mi_fd_close_from(3);
 			/* Rename so /proc/<pid>/comm reads "waybeam-wd"
 			 * instead of "waybeam".  Required for SIGHUP-respawn
 			 * flow: the new instance spawned by
@@ -1461,6 +1469,12 @@ static void star6e_runner_teardown(void *opaque)
 		star6e_pipeline_vpe_scl_preset_shutdown();
 	}
 	star6e_mi_deinit();
+
+	/* No MI call follows.  Release every MI device but sys now, while
+	 * alive: a live release leaves mi_common's exit flag alone, so the
+	 * exit path has only sys left, and sys released under PF_EXITING
+	 * clears the flag (see include/mi_fd_release.h). */
+	mi_fd_release_non_sys();
 }
 
 static VencConfig *star6e_config(void *opaque)
